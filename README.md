@@ -39,22 +39,34 @@ cp dist/index.js "$CONN/dist/"
 
 Restart the app. A **WhatsApp** tile appears under *Add a source*.
 
-### Tier 2 — install from a tarball (no local toolchain)
+### Tier 2 — install from the release tarball (no local toolchain)
 
-1. Produce or download the package tarball (`npm run pack` produces `whatsapp-kia-connector-1.0.0.tgz`; or grab a published release asset).
-2. In the app: **Add a source → Install connector…**
-3. Paste the tarball URL. To pin integrity, append the subresource hash:
+The app downloads and verifies the tarball for you — you only paste a URL. The
+URL and the integrity hash go in **two separate fields** (the hash is not a `#`
+fragment on the URL).
+
+1. In the app: **Add a source → Install connector…**
+2. **npm name or tarball URL** — paste the [release](https://github.com/edjafarov/whatsapp-kia-connector/releases/tag/v1.0.0) asset URL:
 
    ```
-   https://…/whatsapp-kia-connector-1.0.0.tgz#sha512-<base64-sha512>
+   https://github.com/edjafarov/whatsapp-kia-connector/releases/download/v1.0.0/whatsapp-kia-connector-1.0.0.tgz
+   ```
+3. **integrity hash (optional, recommended)** — paste the published SRI into the second field to pin it:
+
+   ```
+   sha512-bBOBuTJ1rp3SWohKj98jhqNugNIeeffhNj0GXQBeAEmcb1LC+JuiEgLczXUUP3NV3pSZermj2wMgjdQmCRi7Hw==
    ```
 
-   Compute the hash with:
+   Verify it yourself against the asset the app will download (must print the
+   string above verbatim):
 
    ```bash
-   shasum -a 512 whatsapp-kia-connector-1.0.0.tgz | awk '{print $1}' | xxd -r -p | base64
+   curl -sL https://github.com/edjafarov/whatsapp-kia-connector/releases/download/v1.0.0/whatsapp-kia-connector-1.0.0.tgz \
+     | openssl dgst -sha512 -binary | { printf 'sha512-'; base64; }
    ```
-4. Review the consent dialog (it shows the manifest before anything is loaded) and confirm.
+
+   Omit the hash and the installer pins it on first install (trust-on-first-use).
+4. **Review** → the consent dialog shows the manifest (no connector code runs yet) → **Install & trust**.
 
 ## Trust model
 
