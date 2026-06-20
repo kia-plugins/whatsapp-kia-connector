@@ -85,6 +85,60 @@ npm run pack       # build + npm pack → whatsapp-kia-connector-1.0.0.tgz
 
 `better-sqlite3` is a **test-only** dependency (the in-memory harness); it is not bundled. The four optional native media deps Baileys can lazy-load (`sharp`, `jimp`, `link-preview-js`, `audio-decode`) are externalized — the buffer-download path used here does not need them, and the `bundle-load` test proves the bundle requires cleanly with zero `node_modules` reachable.
 
+## Releasing a new version
+
+A release is a single tarball published as a GitHub release asset, with its
+integrity hash pinned in the [Tier 2](#tier-2--install-from-the-release-tarball-no-local-toolchain)
+block above. The version string lives in **three places that must match**:
+`package.json` (`version`), `manifest.json` (`version`), and the release tag /
+tarball URL.
+
+1. **Bump the version** in both `package.json` and `manifest.json` (e.g.
+   `1.0.0` → `1.0.1`). `npm pack` names the tarball from `package.json`; the app
+   records and displays `manifest.version`, so a mismatch shows the wrong
+   version in the installed-connectors list.
+
+2. **Build, test, pack** — produces `whatsapp-kia-connector-<version>.tgz`:
+
+   ```bash
+   npm install        # only if dependencies changed
+   npm test           # tsc + ported specs + bundle-load guard must be green
+   npm run pack       # build.mjs → dist/index.js, then npm pack → the .tgz
+   ```
+
+3. **Compute the integrity hash of the exact tarball you just packed.** The SRI
+   changes on every pack (gzip embeds metadata), so always recompute it against
+   the file you are about to upload — never reuse a previous version's hash:
+
+   ```bash
+   openssl dgst -sha512 -binary whatsapp-kia-connector-<version>.tgz \
+     | { printf 'sha512-'; base64; }
+   ```
+
+4. **Publish the release** with that tarball as the asset:
+
+   ```bash
+   gh release create v<version> whatsapp-kia-connector-<version>.tgz \
+     --title "v<version>" \
+     --notes "Integrity: sha512-…   (⚠️ unofficial — Baileys companion device; ban risk)"
+   ```
+
+5. **Re-pin the Tier 2 block above** — update the download URL (the `v<version>`
+   path segment + filename) and the integrity hash to the new release, then
+   commit and push:
+
+   ```bash
+   git add README.md package.json manifest.json
+   git commit -m "release: v<version>"
+   git push
+   ```
+
+Updating an already-installed connector needs **no uninstall**: a user re-runs
+**Add a source → Install connector…** with the new URL, and the installer
+overwrites the connector directory in place, evicts the stale module from the
+require cache, and loads the new bundle — even when sources for it already
+exist. (Tier 1 sideloaders just rebuild and re-copy `dist/index.js`.)
+
 ## License
 
 MIT © 2026 Eldar Djafarov. See [`LICENSE`](./LICENSE). Provided "as is", without warranty — including with respect to WhatsApp account safety.
