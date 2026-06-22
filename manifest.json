@@ -1,38 +1,47 @@
 {
-  "id": "whatsapp",
+  "id": "kia.whatsapp",
   "displayName": "WhatsApp",
-  "icon": "whatsapp",
   "version": "1.0.0",
-  "hostApi": "^1.1.0",
+  "hostApi": "^2.0.0",
   "entry": "dist/index.js",
-  "capabilities": {
-    "multiAccount": true,
-    "requiresAuth": true,
-    "supportsBackfill": true,
-    "supportsDelta": true,
-    "supportsRealtime": true
-  },
-  "inAddSource": false,
-  "pollable": true,
-  "scopeNote": "Unofficial — links a companion device; may risk your number.",
-  "addLabel": "Link device",
-  "steps": [
-    {
-      "type": "live-stream",
-      "start": "begin-pairing",
-      "channel": "push:connector-stream",
-      "banner": {
-        "level": "danger",
-        "text": "Unofficial — links a companion device via an unofficial library; risk of ban."
-      },
-      "render": {
-        "qr": { "as": "qr-image", "from": "qr" },
-        "connected": { "as": "success", "text": "Linked. Syncing…", "autoCloseMs": 1400 },
-        "error": { "as": "error", "from": "error" }
-      },
-      "onAbandon": "cancel-pairing",
-      "timeoutMs": 25000
-    }
-  ],
-  "actions": [{ "key": "import", "label": "Import chat export…", "hook": "whatsapp-import" }]
+  "icon": "whatsapp",
+  "permissions": ["db:write", "secrets", "files:read"],
+  "activationEvents": ["onStartup"],
+  "contributes": {
+    "sources": [
+      {
+        "id": "whatsapp",
+        "displayName": "WhatsApp",
+        "icon": "whatsapp",
+        "capabilities": {
+          "multiAccount": true,
+          "requiresAuth": true,
+          "supportsBackfill": true,
+          "supportsDelta": true,
+          "supportsRealtime": true
+        },
+        "inAddSource": false,
+        "pollable": true,
+        "steps": [
+          {
+            "type": "live-stream",
+            "start": "begin-pairing",
+            "channel": "push:connector-stream",
+            "banner": {
+              "level": "danger",
+              "text": "Unofficial — links a companion device via an unofficial library; risk of ban."
+            },
+            "render": {
+              "qr": { "as": "qr-image", "from": "qr" },
+              "connected": { "as": "success", "text": "Linked. Syncing…", "autoCloseMs": 1400 },
+              "error": { "as": "error", "from": "error" }
+            },
+            "onAbandon": "cancel-pairing",
+            "timeoutMs": 25000
+          }
+        ],
+        "actions": [{ "key": "import", "label": "Import chat export…", "hook": "whatsapp-import" }]
+      }
+    ]
+  }
 }
