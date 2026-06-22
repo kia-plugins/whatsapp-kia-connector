@@ -1,11 +1,11 @@
 {
   "id": "kia.whatsapp",
   "displayName": "WhatsApp",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "hostApi": "^2.0.0",
   "entry": "dist/index.js",
   "icon": "whatsapp",
-  "permissions": ["db:write", "secrets", "files:read"],
+  "permissions": ["db:write", "db:read", "net", "secrets", "files:read"],
   "activationEvents": ["onStartup"],
   "contributes": {
     "sources": [
