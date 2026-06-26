@@ -8,7 +8,7 @@ import {
   type AuthenticationState,
   type SignalDataTypeMap,
 } from '@whiskeysockets/baileys';
-import type { SafeStorageLike } from '@alpha-cent/connector-sdk';
+import type { SafeStorageLike } from '@kiagent/connector-sdk';
 
 // The signal key store is heterogeneous (pre-keys, sessions, sender-keys,
 // app-state-sync-keys, …). We keep it loosely typed in storage and rely on

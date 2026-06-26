@@ -9,7 +9,7 @@ import type {
   ConnectorInstance,
   ConnectorHost,
   ConnectorSetupHost,
-} from '@alpha-cent/connector-sdk';
+} from '@kiagent/connector-sdk';
 import type { Db, Converter } from './host';
 import { makeEncryptedAuthState } from './auth-state';
 import { WhatsAppRuntime } from './instance';
