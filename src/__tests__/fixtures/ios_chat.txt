@@ -1,6 +1,0 @@
-[3/18/22, 14:56:01] Messages and calls are end-to-end encrypted.
-[6/11/26, 09:41:35] Alice: morning!
-[6/11/26, 09:42:10] Bob: on my way
-[6/11/26, 09:42:40] Bob: ‎<attached: 00000042-PHOTO-2026-06-11-09-42-40.jpg>
-[6/11/26, 09:43:00] Alice: see you
-this is a second line

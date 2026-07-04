@@ -1,8 +1,6 @@
-// src/main/connectors/whatsapp/types.ts
-
 /** A single chat message after normalization from either ingest path. */
 export interface NormalizedMessage {
-  /** Stable id: WhatsApp message id (live) or hash(ts+sender+text) (import). */
+  /** Stable id: the WhatsApp message id. */
   id: string;
   /** Epoch milliseconds. */
   tsMs: number;
@@ -22,7 +20,7 @@ export type MediaKind = 'image' | 'video' | 'audio' | 'document' | 'sticker';
 
 export interface MediaDescriptor {
   kind: MediaKind;
-  /** Original filename if known (Android exports / document messages). */
+  /** Original filename if known (document messages). */
   filename?: string;
   /** Mime type if known. */
   mimeType?: string;
@@ -30,19 +28,43 @@ export interface MediaDescriptor {
   durationSec?: number;
 }
 
-/** Identifies a chat across both paths. JID for live; name-derived for import. */
-export interface ChatRef {
-  /** 'jid' for live messages; 'name' for imports not yet resolved to a JID. */
-  keyKind: 'jid' | 'name';
-  /** The chat JID (live) or a slug of the chat name (import). */
-  key: string;
-  /** Human chat title. */
+/** Resolved chat identity at flush time (name re-resolved on every build). */
+export interface ChatInfo {
+  jid: string;
   name: string;
   type: 'dm' | 'group';
 }
 
-/** sync_state.cursor_json shape for the live connector. */
+/** Account.cursor shape. Vestigial but observable (WhatsApp pushes history —
+ *  idempotency lives in the per-day ledger merge, not the cursor), committed
+ *  transactionally with every batch. */
 export interface WhatsAppCursor {
-  /** Highest message timestamp (ms) we have ingested, for checkpointing. */
-  lastTsMs?: number;
+  /** Highest message timestamp (ms) ingested so far. */
+  lastTsMs: number;
 }
+
+/** One (chat, local-day) document with its COMPLETE merged message ledger. */
+export interface DayItem {
+  kind: 'day';
+  chat: ChatInfo;
+  /** Local-calendar day key 'YYYY-MM-DD'. */
+  day: string;
+  /** Full merged ledger for the day, ascending (ts, id). */
+  messages: NormalizedMessage[];
+}
+
+/** Downloaded media bytes for one message, parented under its day item. */
+export interface FileItem {
+  kind: 'file';
+  chatJid: string;
+  /** Local day key of the owning chat-day (the parent edge). */
+  day: string;
+  msgId: string;
+  bytes: Uint8Array;
+  mimeType?: string;
+  filename?: string;
+  /** Epoch-ms send time of the carrying message (drives createdAt). */
+  sentAtMs: number;
+}
+
+export type WhatsAppItem = DayItem | FileItem;

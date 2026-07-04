@@ -1,3 +1,15 @@
+/**
+ * Normalize a device-qualified JID to its bare phone-user form:
+ * '4917012345:13@s.whatsapp.net' → '4917012345@s.whatsapp.net'.
+ * Used both for the account identifier (re-pairing the same phone must yield
+ * the same identifier so the platform upserts the SAME account) and for
+ * self-JID comparison in the contact book.
+ */
+export function normalizeJid(jid: string): string {
+  const [user, host = 's.whatsapp.net'] = jid.split('@');
+  return `${user.split(':')[0]}@${host}`;
+}
+
 /** Resolves WhatsApp JIDs to display names; mutated as contacts.update arrives. */
 export class ContactBook {
   private names = new Map<string, string>();

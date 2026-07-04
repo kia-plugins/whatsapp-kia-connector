@@ -1,4 +1,22 @@
-import { ContactBook } from '../contacts';
+import { ContactBook, normalizeJid } from '../contacts';
+
+describe('normalizeJid', () => {
+  it('strips the :device suffix down to the bare phone-user form', () => {
+    expect(normalizeJid('4917012345:13@s.whatsapp.net')).toBe(
+      '4917012345@s.whatsapp.net',
+    );
+  });
+
+  it('leaves an already-bare JID untouched', () => {
+    expect(normalizeJid('4917012345@s.whatsapp.net')).toBe(
+      '4917012345@s.whatsapp.net',
+    );
+  });
+
+  it('defaults the host when missing', () => {
+    expect(normalizeJid('4917012345:2')).toBe('4917012345@s.whatsapp.net');
+  });
+});
 
 describe('ContactBook', () => {
   it('resolves a known JID to its display name', () => {

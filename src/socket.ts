@@ -1,4 +1,3 @@
-// src/main/connectors/whatsapp/socket.ts
 import { DisconnectReason } from '@whiskeysockets/baileys';
 import type { WASocket } from '@whiskeysockets/baileys';
 
@@ -40,7 +39,7 @@ export interface WhatsAppSocketDeps {
  * transitive `@hapi/boom` type — undefined for a plain Error, which is what the
  * reconnect branch wants (transient → reconnect, not logged-out).
  */
-function statusCodeOf(err: unknown): number | undefined {
+export function statusCodeOf(err: unknown): number | undefined {
   return (err as { output?: { statusCode?: number } } | undefined)?.output
     ?.statusCode;
 }

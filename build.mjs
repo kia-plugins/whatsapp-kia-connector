@@ -5,7 +5,7 @@ await build({
   bundle: true,
   platform: 'node',
   format: 'cjs',
-  target: 'node18',
+  target: 'node20',
   outfile: 'dist/index.js',
   // Optional native media deps Baileys lazy-loads; not used by buffer download.
   external: ['sharp', 'jimp', 'link-preview-js', 'audio-decode'],
