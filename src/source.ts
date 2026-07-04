@@ -43,11 +43,16 @@ export interface WhatsAppSourceSeams {
   /** Socket factory factory: resolves Baileys version, returns the per-
    *  (re)connect socket maker. Tests return a fake-socket maker. */
   makeSocketFactory?: (auth: AuthenticationState) => Promise<() => WASocket>;
-  downloadMedia?: (wm: proto.IWebMessageInfo) => Promise<Buffer | null>;
+  downloadMedia?: (
+    wm: proto.IWebMessageInfo,
+    signal: AbortSignal,
+  ) => Promise<Buffer | null>;
   /** Auth-blob encryption seam (default plaintext — see auth-state.ts). */
   codec?: AuthBlobCodec;
   flushDebounceMs?: number;
   pairingTimeoutMs?: number;
+  mediaTimeoutMs?: number;
+  stopMediaWaitMs?: number;
   reconnectBaseMs?: number;
   reconnectCapMs?: number;
 }
@@ -163,8 +168,16 @@ export function createWhatsAppSource(
           const prior = (doc?.metadata as { messages?: unknown })?.messages;
           return Array.isArray(prior) ? (prior as NormalizedMessage[]) : null;
         },
+        hasStoredFile: async (externalId) =>
+          (await host.query.byExternalId(
+            session.account.id,
+            externalId,
+            FILE_DOC_TYPE,
+          )) !== null,
         log: (level, msg) => session.log(level, msg),
         flushDebounceMs: seams.flushDebounceMs,
+        mediaTimeoutMs: seams.mediaTimeoutMs,
+        stopMediaWaitMs: seams.stopMediaWaitMs,
         reconnectBaseMs: seams.reconnectBaseMs,
         reconnectCapMs: seams.reconnectCapMs,
       });

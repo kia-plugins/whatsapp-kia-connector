@@ -490,6 +490,110 @@ describe('pull — media', () => {
     }
   });
 
+  it('downloads a re-delivered history chunk\'s media exactly once (Baileys re-delivers on reconnect)', async () => {
+    let downloads = 0;
+    const h = await harness({
+      downloadMedia: async () => {
+        downloads += 1;
+        return Buffer.from('x');
+      },
+    });
+    const pending = h.it.next();
+    await waitFor(() => h.state.made === 1);
+
+    const chunk = {
+      contacts: [],
+      chats: [],
+      messages: [imgMsg('IMG1', T0_SEC, 'cap')],
+    };
+    h.ev.emit('messaging-history.set', chunk);
+    h.ev.emit('messaging-history.set', chunk); // re-delivered
+
+    // Collect until the file item lands, then drain via abort.
+    const batches: WABatch[] = [await nextBatch(h.it, pending)];
+    while (!batches.some((x) => x.items.some((i) => i.kind === 'file'))) {
+      batches.push(await nextBatch(h.it));
+    }
+    void h.controller.abort();
+    for (;;) {
+      const r = await h.it.next();
+      if (r.done) break;
+      batches.push(r.value);
+    }
+
+    expect(downloads).toBe(1);
+    const files = batches.flatMap((x) => x.items.filter((i) => i.kind === 'file'));
+    expect(files).toHaveLength(1);
+  });
+
+  it('never re-downloads media the store already holds as a file doc (cross-run idempotency)', async () => {
+    let downloads = 0;
+    const h = await harness({
+      // Any truthy doc for the file externalId ⇒ hasStoredFile → true.
+      prior: { [`${ALICE}:IMG9`]: [] },
+      downloadMedia: async () => {
+        downloads += 1;
+        return Buffer.from('x');
+      },
+    });
+    const pending = h.it.next();
+    await waitFor(() => h.state.made === 1);
+
+    h.ev.emit('messages.upsert', {
+      type: 'notify',
+      messages: [imgMsg('IMG9', T0_SEC, 'already ingested last run')],
+    });
+
+    const batch = await nextBatch(h.it, pending); // the day still flushes
+    expect(batch.items[0].kind).toBe('day');
+    await waitFor(() => h.queried.includes(`${ALICE}:IMG9`)); // check ran
+    await wait(20);
+    expect(downloads).toBe(0);
+
+    void h.controller.abort();
+    const rest: WABatch[] = [];
+    for (;;) {
+      const r = await h.it.next();
+      if (r.done) break;
+      rest.push(r.value);
+    }
+    expect(rest.flatMap((x) => x.items).some((i) => i.kind === 'file')).toBe(false);
+  });
+
+  it('abort during a stalled download returns promptly and never emits the straggler', async () => {
+    let downloads = 0;
+    const h = await harness({
+      downloadMedia: async () => {
+        downloads += 1;
+        await new Promise<void>(() => {}); // wedged CDN fetch: never settles
+        return null;
+      },
+    });
+    const pending = h.it.next();
+    await waitFor(() => h.state.made === 1);
+
+    h.ev.emit('messages.upsert', {
+      type: 'notify',
+      messages: [imgMsg('IMG1', T0_SEC, 'cap')],
+    });
+    const first = await nextBatch(h.it, pending); // text flush lands fine
+    expect(first.items[0].kind).toBe('day');
+    await waitFor(() => downloads === 1); // the download is now in flight
+
+    const t0 = Date.now();
+    h.controller.abort();
+    const rest: WABatch[] = [];
+    for (;;) {
+      const r = await h.it.next();
+      if (r.done) break;
+      rest.push(r.value);
+    }
+    // Bounded stop: the wedged download can't hold the generator hostage…
+    expect(Date.now() - t0).toBeLessThan(1500);
+    // …and nothing media-related is ever emitted after the abort.
+    expect(rest.flatMap((x) => x.items).some((i) => i.kind === 'file')).toBe(false);
+  });
+
   it('skips media whose download yields nothing (placeholder stays)', async () => {
     const h = await harness({ downloadMedia: async () => null });
     const pending = h.it.next();
@@ -544,10 +648,14 @@ describe('pull — shutdown paths', () => {
     expect(r.done).toBe(true);
   });
 
-  it('propagates a 401 logout as an auth error after draining', async () => {
+  it('propagates a 401 logout as an auth error after draining, with a final blob persist', async () => {
     const h = await harness();
     const pending = h.it.next();
     await waitFor(() => h.state.made === 1);
+
+    // If the loggedOut path best-effort-persists, the blob reappears.
+    const blobPath = path.join(h.dir, h.authFile);
+    fs.rmSync(blobPath);
 
     h.ev.emit('connection.update', {
       connection: 'close',
@@ -564,6 +672,7 @@ describe('pull — shutdown paths', () => {
     expect(thrown).toBeInstanceOf(Error);
     expect(String((thrown as Error).message)).toMatch(/logged out .*reconnect the account/);
     expect(isAuthError(thrown)).toBe(true);
+    expect(fs.existsSync(blobPath)).toBe(true); // the "final persist" happened
   });
 
   it('re-persists the auth blob on creds.update (key rotation)', async () => {

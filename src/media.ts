@@ -11,13 +11,20 @@ export const MEDIA_SIZE_CAP_BYTES = 25 * 1024 * 1024;
  * resolve to null — the day doc keeps its `[image]`/`[document: …]` label and
  * the walk continues (one broken download must not abort anything). The
  * runtime calls this ONE message at a time: concurrent media fetches read as
- * abnormal-client behavior to WhatsApp and raise ban risk.
+ * abnormal-client behavior to WhatsApp and raise ban risk. The signal wires
+ * abort straight into the CDN request (media downloads run over HTTPS,
+ * independent of the socket) so a stop can't leave the fetch wedged.
  */
 export async function defaultDownloadMedia(
   wm: proto.IWebMessageInfo,
+  signal?: AbortSignal,
 ): Promise<Buffer | null> {
   try {
-    const buf = await downloadMediaMessage(wm, 'buffer', {});
+    const buf = await downloadMediaMessage(
+      wm,
+      'buffer',
+      signal ? { options: { signal } } : {},
+    );
     return Buffer.isBuffer(buf) ? buf : null;
   } catch {
     return null;

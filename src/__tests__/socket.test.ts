@@ -125,6 +125,50 @@ describe('WhatsAppSocket', () => {
     expect(state.calls).toBe(2);
   });
 
+  it('logs and reschedules when a reconnect attempt itself throws (no silent zombie)', async () => {
+    // Real timers with tiny backoff: attempt 2 throws inside start(), the
+    // catch must reschedule so attempt 3 still happens.
+    let calls = 0;
+    let latest: EventEmitter | undefined;
+    const factory = () => {
+      calls += 1;
+      if (calls === 2) throw new Error('dns down');
+      const ev = new EventEmitter();
+      latest = ev;
+      return {
+        ev: { on: ev.on.bind(ev), off: ev.off.bind(ev) },
+        end: jest.fn(),
+        ws: { close: jest.fn() },
+      } as any;
+    };
+    const logs: string[] = [];
+    const s = new WhatsAppSocket({
+      makeSocket: factory,
+      reconnectBaseMs: 1,
+      reconnectCapMs: 4,
+      onLog: (_level, msg) => logs.push(msg),
+      onQr: () => {},
+      onConnected: () => {},
+      onLoggedOut: () => {},
+      onMessages: () => {},
+      onHistory: () => {},
+    });
+    await s.start();
+    expect(calls).toBe(1);
+    latest!.emit('connection.update', {
+      connection: 'close',
+      lastDisconnect: { error: new Error('boom') },
+    });
+    // attempt 2 fires and throws; the reschedule must produce attempt 3.
+    const deadline = Date.now() + 1000;
+    while (calls < 3 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(calls).toBeGreaterThanOrEqual(3);
+    expect(logs.some((m) => /reconnect failed/.test(m))).toBe(true);
+    await s.stop();
+  });
+
   it('stop() cancels a pending reconnect', async () => {
     jest.useFakeTimers();
     const { state, factory } = countingBaileys();

@@ -31,6 +31,8 @@ export interface WhatsAppSocketDeps {
   }) => void;
   /** Live contact add/rename (contacts.upsert / contacts.update). Optional. */
   onContacts?: (contacts: unknown[]) => void;
+  /** Diagnostics sink (reconnect failures). Defaults to console.error. */
+  onLog?: (level: 'warn' | 'error', msg: string) => void;
 }
 
 /**
@@ -108,7 +110,15 @@ export class WhatsAppSocket {
     this.reconnectTimer = setTimeout(() => {
       if (!this.closed)
         void this.start().catch((e) => {
-          console.error('[whatsapp] reconnect failed:', e);
+          const msg = `whatsapp: reconnect failed: ${
+            e instanceof Error ? e.message : String(e)
+          }`;
+          if (this.deps.onLog) this.deps.onLog('error', msg);
+          else console.error(msg);
+          // A failed (re)start must not strand the socket as a silent zombie:
+          // keep retrying under the same jittered backoff (attempts keep
+          // incrementing, so the delay keeps growing toward the cap).
+          if (!this.closed) this.scheduleReconnect();
         });
     }, wait);
   }
