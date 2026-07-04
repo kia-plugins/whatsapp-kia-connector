@@ -523,6 +523,10 @@ export class WhatsAppPullRuntime {
   private async boundedDownload(m: PendingMedia): Promise<Buffer | null> {
     const timeoutMs = this.deps.mediaTimeoutMs ?? MEDIA_DOWNLOAD_TIMEOUT_MS;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    // Named so the finally can detach it — a pull runs for days, and a
+    // leaked once-listener per download trips MaxListenersExceededWarning
+    // at the 11th media file.
+    let onAbort: (() => void) | undefined;
     const download = this.deps.downloadMedia(m.wm, this.stopAbort.signal);
     download.catch(() => {});
     try {
@@ -537,13 +541,15 @@ export class WhatsAppPullRuntime {
             resolve(null);
             return;
           }
-          this.stopAbort.signal.addEventListener('abort', () => resolve(null), {
+          onAbort = () => resolve(null);
+          this.stopAbort.signal.addEventListener('abort', onAbort, {
             once: true,
           });
         }),
       ]);
     } finally {
       if (timer) clearTimeout(timer);
+      if (onAbort) this.stopAbort.signal.removeEventListener('abort', onAbort);
     }
   }
 
