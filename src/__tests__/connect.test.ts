@@ -7,7 +7,7 @@ import type { AuthenticationState, WASocket } from '@whiskeysockets/baileys';
 
 import { loadAuthState } from '../auth-state';
 import type { AuthChannel, HostFor } from '../kiagent-contracts';
-import { createWhatsAppSource } from '../source';
+import { createWhatsAppSource, PAIRING_BROWSER } from '../source';
 
 /**
  * Fake Baileys factory mirroring real behavior: a FRESH emitter per call
@@ -175,5 +175,14 @@ describe('connect (QR pairing)', () => {
     const { auth } = makeAuth();
 
     await expect(source.connect(auth)).rejects.toThrow(/timed out — try again/);
+  });
+
+  it('never advertises a Desktop sub-platform identity to WhatsApp', () => {
+    // WhatsApp closes registration with 428 "Connection Terminated" before
+    // any QR when the client claims DARWIN/WIN32 (Baileys OS names 'Mac OS'/
+    // 'Windows') or the 'Desktop' browser — WhiskeySockets/Baileys#2677.
+    const [osName, browserName] = PAIRING_BROWSER;
+    expect(['Mac OS', 'Windows']).not.toContain(osName);
+    expect(browserName).not.toBe('Desktop');
   });
 });

@@ -58,6 +58,15 @@ export interface WhatsAppSourceSeams {
 }
 
 /**
+ * WhatsApp terminates registrations that advertise a Desktop sub-platform
+ * (DARWIN/WIN32) since 2026-07 — `Browsers.appropriate('Desktop')` closes
+ * with 428 "Connection Terminated" before any QR is issued (WhiskeySockets/
+ * Baileys#2677). A WEB_BROWSER identity pairs fine; the linked device shows
+ * up as "Chrome (Ubuntu)" on the phone.
+ */
+export const PAIRING_BROWSER = Browsers.ubuntu('Chrome');
+
+/**
  * Best-effort protocol version: fetchLatestBaileysVersion raced against 3s —
  * on timeout/failure Baileys falls back to its baked-in default (v1 parity).
  */
@@ -77,7 +86,7 @@ async function defaultSocketFactory(
     makeWASocket({
       version,
       auth,
-      browser: Browsers.appropriate('Desktop'),
+      browser: PAIRING_BROWSER,
       syncFullHistory: true,
     });
 }

@@ -42,6 +42,12 @@ connector needs before it activates:
    again. Re-pairing the same number later reuses the same account and simply
    refreshes its credentials.
 
+The linked device appears as **"Chrome (Ubuntu)"** in your phone's Linked
+Devices list. That identity is deliberate: since July 2026 WhatsApp terminates
+registrations that advertise a Desktop client (DARWIN/WIN32 sub-platform)
+before a QR is ever issued ([Baileys #2677](https://github.com/WhiskeySockets/Baileys/issues/2677)),
+so the connector pairs with a web-browser identity instead.
+
 ## What gets indexed
 
 - **One document per chat per (local) day** — type `whatsapp.chat_day`,
