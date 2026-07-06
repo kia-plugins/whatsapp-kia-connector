@@ -26,6 +26,13 @@ const MEDIA_DOWNLOAD_TIMEOUT_MS = 60_000;
 /** How long stop() waits for the media drain to settle before proceeding. */
 const STOP_MEDIA_WAIT_MS = 5_000;
 
+/** How long the history stream must stay quiet (no chunk since connect or
+ *  since the last one) before the backlog counts as delivered and the phase
+ *  flips to 'live'. WhatsApp has no universal "history done" signal — the
+ *  final chunk of a full sync carries progress=100, but recent-only syncs
+ *  and resumed sessions send no progress at all, so quiet is the fallback. */
+const CATCH_UP_QUIET_MS = 60_000;
+
 export type WhatsAppBatch = Batch<WhatsAppCursor, WhatsAppItem>;
 
 export interface PullRuntimeDeps {
@@ -60,6 +67,8 @@ export interface PullRuntimeDeps {
   log: (level: LogLevel, msg: string) => void;
   /** Debounce for the auto-flush after an ingest burst. Default 1500ms. */
   flushDebounceMs?: number;
+  /** Quiet window before history counts as caught up. Default 60s. */
+  catchUpQuietMs?: number;
   /** Per-download deadline. Default 60s. */
   mediaTimeoutMs?: number;
   /** stop()'s bound on waiting for the media drain. Default 5s. */
@@ -152,6 +161,15 @@ export class WhatsAppPullRuntime {
    *  'backfill'. */
   private liveSeen = false;
 
+  /** Flips when the history backlog counts as delivered (a chunk reported
+   *  progress 100, or the stream went quiet) — a realtime message is NOT
+   *  required to reach phase 'live'. Without this, an account nobody texts
+   *  after catch-up would show "backfilling" forever: the engine only flips
+   *  status on a live-phase batch commit. */
+  private historyDone = false;
+
+  private catchUpTimer?: ReturnType<typeof setTimeout>;
+
   private lastTsMs: number;
 
   /** The socket reported a 401 logout — terminal; pull() throws after drain. */
@@ -175,6 +193,9 @@ export class WhatsAppPullRuntime {
         void this.deps.saveCreds().catch((e) =>
           this.deps.log('warn', `whatsapp: creds persist failed: ${errText(e)}`),
         );
+        // Resumed sessions may send NO history at all — arm the quiet window
+        // at open so they still flip to 'live'.
+        this.armCatchUp();
       },
       onLoggedOut: () => {
         // Final best-effort persist: keep the last creds/key state on disk
@@ -201,9 +222,17 @@ export class WhatsAppPullRuntime {
           messages?: proto.IWebMessageInfo[];
           contacts?: unknown[];
           chats?: unknown[];
+          progress?: number | null;
         };
         this.absorbContacts(hh.contacts, hh.chats);
         this.ingest(hh.messages ?? [], 'history');
+        // Full syncs stamp the final chunk with progress=100 — flip right
+        // away. Otherwise re-arm the quiet window: more chunks may follow.
+        if (typeof hh.progress === 'number' && hh.progress >= 100) {
+          this.markCaughtUp();
+        } else {
+          this.armCatchUp();
+        }
       },
       onContacts: (c) => this.absorbContacts(c, undefined),
     });
@@ -240,6 +269,10 @@ export class WhatsAppPullRuntime {
     if (this.flushTimer) {
       clearTimeout(this.flushTimer);
       this.flushTimer = undefined;
+    }
+    if (this.catchUpTimer) {
+      clearTimeout(this.catchUpTimer);
+      this.catchUpTimer = undefined;
     }
     await this.socket.stop();
     // Bounded wait: a downloader that ignores the abort must not hold the
@@ -375,7 +408,39 @@ export class WhatsAppPullRuntime {
   }
 
   private phase(): 'backfill' | 'live' {
-    return this.liveSeen ? 'live' : 'backfill';
+    return this.liveSeen || this.historyDone ? 'live' : 'backfill';
+  }
+
+  /** (Re)start the quiet-window countdown; a fresh history chunk re-arms it. */
+  private armCatchUp(): void {
+    if (this.historyDone || this.liveSeen || this.closed) return;
+    if (this.catchUpTimer) clearTimeout(this.catchUpTimer);
+    this.catchUpTimer = setTimeout(() => {
+      this.catchUpTimer = undefined;
+      this.markCaughtUp();
+    }, this.deps.catchUpQuietMs ?? CATCH_UP_QUIET_MS);
+    // Don't hold the event loop open just for the catch-up check.
+    this.catchUpTimer.unref?.();
+  }
+
+  /** History backlog delivered: flip the phase and make sure the engine hears
+   *  it. Status only changes on a batch commit, so when nothing is left to
+   *  flush an empty marker batch carries the flip. */
+  private markCaughtUp(): void {
+    if (this.historyDone || this.closed) return;
+    this.historyDone = true;
+    if (this.catchUpTimer) {
+      clearTimeout(this.catchUpTimer);
+      this.catchUpTimer = undefined;
+    }
+    // A realtime message already flipped the phase — its batches carry it.
+    if (this.liveSeen) return;
+    void this.enqueue(async () => {
+      await this.doFlush();
+      if (!this.closed) this.push([]);
+    }).catch((e) =>
+      this.deps.log('warn', `whatsapp: catch-up flush failed: ${errText(e)}`),
+    );
   }
 
   private push(items: WhatsAppItem[]): void {

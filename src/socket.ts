@@ -28,6 +28,9 @@ export interface WhatsAppSocketDeps {
     chats: unknown[];
     contacts: unknown[];
     messages: unknown[];
+    /** Sync percentage when WhatsApp includes it; 100 marks the final chunk
+     *  of a full history sync. Recent-only syncs may never send it. */
+    progress?: number | null;
   }) => void;
   /** Live contact add/rename (contacts.upsert / contacts.update). Optional. */
   onContacts?: (contacts: unknown[]) => void;

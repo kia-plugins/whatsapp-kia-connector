@@ -50,6 +50,7 @@ export interface WhatsAppSourceSeams {
   /** Auth-blob encryption seam (default plaintext — see auth-state.ts). */
   codec?: AuthBlobCodec;
   flushDebounceMs?: number;
+  catchUpQuietMs?: number;
   pairingTimeoutMs?: number;
   mediaTimeoutMs?: number;
   stopMediaWaitMs?: number;
@@ -185,6 +186,7 @@ export function createWhatsAppSource(
           )) !== null,
         log: (level, msg) => session.log(level, msg),
         flushDebounceMs: seams.flushDebounceMs,
+        catchUpQuietMs: seams.catchUpQuietMs,
         mediaTimeoutMs: seams.mediaTimeoutMs,
         stopMediaWaitMs: seams.stopMediaWaitMs,
         reconnectBaseMs: seams.reconnectBaseMs,

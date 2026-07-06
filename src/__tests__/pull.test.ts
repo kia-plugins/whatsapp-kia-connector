@@ -50,6 +50,7 @@ async function waitFor(pred: () => boolean, ms = 2000): Promise<void> {
 
 interface HarnessOpts {
   flushDebounceMs?: number;
+  catchUpQuietMs?: number;
   downloadMedia?: (wm: unknown) => Promise<Buffer | null>;
   /** Prior store ledgers keyed by chat-day externalId. */
   prior?: Record<string, NormalizedMessage[]>;
@@ -105,6 +106,7 @@ async function harness(opts: HarnessOpts = {}) {
   const source = createWhatsAppSource(host, {
     makeSocketFactory: async () => makeSocket,
     flushDebounceMs: opts.flushDebounceMs ?? 0,
+    catchUpQuietMs: opts.catchUpQuietMs,
     downloadMedia: (opts.downloadMedia ?? (async () => null)) as never,
   });
 
@@ -237,6 +239,63 @@ describe('pull — history backfill and live flip', () => {
     });
     const third = await nextBatch(h.it);
     expect(third.phase).toBe('live');
+
+    void h.controller.abort();
+    while (!(await h.it.next()).done) {
+      /* drain */
+    }
+  });
+
+  it('flips to live after the history stream goes quiet, via an empty marker batch', async () => {
+    const h = await harness({ catchUpQuietMs: 40 });
+    const pending = h.it.next();
+    await waitFor(() => h.state.made === 1);
+
+    h.ev.emit('messaging-history.set', {
+      contacts: [],
+      chats: [],
+      messages: [textMsg('H1', T0_SEC, 'history')],
+    });
+    const first = await nextBatch(h.it, pending);
+    expect(first.phase).toBe('backfill');
+
+    // Nobody texts after catch-up — the quiet window alone must flip the
+    // phase, and the flip must reach the engine as a (marker) batch.
+    const marker = await nextBatch(h.it);
+    expect(marker.phase).toBe('live');
+    expect(marker.items).toHaveLength(0);
+    expect(marker.cursor).toEqual({ lastTsMs: T0_SEC * 1000 });
+
+    // History re-delivered after the flip (e.g. a reconnect) stays 'live'.
+    h.ev.emit('messaging-history.set', {
+      contacts: [],
+      chats: [],
+      messages: [textMsg('H2', T0_SEC + 60, 'straggler')],
+    });
+    const third = await nextBatch(h.it);
+    expect(third.phase).toBe('live');
+
+    void h.controller.abort();
+    while (!(await h.it.next()).done) {
+      /* drain */
+    }
+  });
+
+  it('flips to live as soon as a history chunk reports progress 100', async () => {
+    const h = await harness(); // default quiet window — never fires in-test
+    const pending = h.it.next();
+    await waitFor(() => h.state.made === 1);
+
+    h.ev.emit('messaging-history.set', {
+      contacts: [],
+      chats: [],
+      messages: [textMsg('H1', T0_SEC, 'final chunk')],
+      progress: 100,
+    });
+    // The final chunk itself lands as 'live' — no quiet wait needed.
+    const first = await nextBatch(h.it, pending);
+    expect(first.phase).toBe('live');
+    expect((first.items[0] as DayItem).messages.map((m) => m.id)).toEqual(['H1']);
 
     void h.controller.abort();
     while (!(await h.it.next()).done) {
