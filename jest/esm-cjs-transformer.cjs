@@ -2,7 +2,7 @@
 // it can be required in the CJS Jest environment. Uses TypeScript's
 // transpileModule because typescript is already a project devDependency and
 // handles ESM->CJS reliably. getCacheKey folds in the typescript version so the
-// cache invalidates on upgrades. (Mirrors alpha-cent's .erb/jest transformer;
+// cache invalidates on upgrades. (Mirrors the v1 repo's .erb/jest transformer;
 // production never uses this path — esbuild bundles Baileys to CJS in dist/.)
 const ts = require('typescript');
 const crypto = require('crypto');
