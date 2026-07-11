@@ -26,12 +26,21 @@ import { normalizeJid } from './contacts';
 import type {
   AuthChannel,
   Batch,
+  Document,
   DocumentInput,
   HostFor,
   Session,
   Source,
 } from './kiagent-contracts';
-import { defaultDownloadMedia, FILE_DOC_TYPE } from './media';
+import {
+  attachmentFilename,
+  decodeMediaRef,
+  defaultDownloadMedia,
+  extFromMime,
+  FILE_DOC_TYPE,
+  MEDIA_SIZE_CAP_BYTES,
+  normalizeMime,
+} from './media';
 import { pairAndWaitOpen } from './pair';
 import { WhatsAppPullRuntime } from './runtime';
 import type { NormalizedMessage, WhatsAppCursor, WhatsAppItem } from './types';
@@ -95,6 +104,12 @@ async function defaultSocketFactory(
 /** '4917012345@s.whatsapp.net' → a safe blob filename stem. */
 function sanitizeIdentifier(identifier: string): string {
   return identifier.replace(/[^A-Za-z0-9._-]/g, '_');
+}
+
+/** 'report.pdf' → 'pdf'; undefined when there's no usable extension. */
+function extOf(filename?: string): string | undefined {
+  const m = filename ? /\.([A-Za-z0-9]+)$/.exec(filename) : null;
+  return m ? m[1].toLowerCase() : undefined;
 }
 
 const NOT_PAIRED = 'whatsapp: not paired — reconnect the account';
@@ -245,27 +260,68 @@ export function createWhatsAppSource(
           createdAt: messages[0] ? new Date(messages[0].tsMs).toISOString() : null,
         };
       }
+      // Deep-extraction handoff: the platform's vision/audio classifiers key
+      // on metadata.mime / sizeBytes / filename / ext — write exactly those
+      // (a parameterized 'audio/ogg; codecs=opus' is normalized, a nameless
+      // voice note gets a synthetic 'voice-note.ogg').
+      const mime = normalizeMime(item.mimeType);
+      const filename = attachmentFilename(
+        item.mediaKind,
+        item.filename,
+        item.mimeType,
+      );
+      const ext = extOf(filename) ?? extFromMime(item.mimeType);
       const metadata: Record<string, unknown> = {
         chat_key: item.chatJid,
-        size_bytes: item.bytes.byteLength,
+        sizeBytes: item.bytes.byteLength,
       };
-      if (item.mimeType !== undefined) metadata.mime_type = item.mimeType;
-      if (item.filename !== undefined) metadata.filename = item.filename;
+      if (mime !== undefined) metadata.mime = mime;
+      if (filename !== undefined) metadata.filename = filename;
+      if (ext !== undefined) metadata.ext = ext;
+      if (item.mediaRef) metadata.wa_msg = item.mediaRef;
       return {
         externalId: `${item.chatJid}:${item.msgId}`,
         type: FILE_DOC_TYPE,
-        title: item.filename ?? 'attachment',
+        title: filename ?? 'attachment',
         // null markdown + binary bytes: the ENGINE converts (parsers/OCR).
         markdown: null,
         binary: {
           bytes: item.bytes,
-          mime: item.mimeType ?? 'application/octet-stream',
-          ...(item.filename !== undefined ? { filename: item.filename } : {}),
+          mime: mime ?? 'application/octet-stream',
+          ...(filename !== undefined ? { filename } : {}),
         },
         metadata,
         createdAt: new Date(item.sentAtMs).toISOString(),
         parent: { externalId: `${item.chatJid}:${item.day}`, type: DOC_TYPE },
       };
+    },
+
+    /**
+     * Deep-extraction byte path: the platform's vision (OCR/VLM) and audio
+     * (transcription) workers re-fetch a file doc's bytes on demand — the
+     * store never keeps binary. The wa_msg ref rebuilds the exact message
+     * (mediaKey, directPath, url) for a fresh CDN download/decrypt. Null on
+     * any failure: the worker records a terminal 'skip' for that doc and the
+     * walk continues. WhatsApp media does expire upstream, so an old ref
+     * yielding null is expected, not exceptional.
+     */
+    async fetchBytes(
+      session: Session,
+      doc: Document,
+    ): Promise<Uint8Array | null> {
+      const ref = (doc.metadata as { wa_msg?: unknown }).wa_msg;
+      if (typeof ref !== 'string' || ref.length === 0) return null;
+      const wm = decodeMediaRef(ref);
+      if (!wm) {
+        session.log(
+          'warn',
+          `whatsapp: unreadable wa_msg ref on ${doc.externalId} — cannot re-fetch media`,
+        );
+        return null;
+      }
+      const bytes = await downloadMedia(wm, session.signal);
+      if (!bytes || bytes.length > MEDIA_SIZE_CAP_BYTES) return null;
+      return bytes;
     },
   };
 }

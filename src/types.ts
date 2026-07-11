@@ -61,6 +61,13 @@ export interface FileItem {
   day: string;
   msgId: string;
   bytes: Uint8Array;
+  /** Which media sub-message carried the bytes — stems the synthetic
+   *  filename for media WhatsApp ships nameless (voice notes, photos). */
+  mediaKind: MediaKind;
+  /** base64 proto.WebMessageInfo of the carrying message — persisted as
+   *  metadata.wa_msg, fetchBytes' way back to the CDN bytes ('' if the
+   *  encode failed; the doc then simply has no deep-extraction path). */
+  mediaRef: string;
   mimeType?: string;
   filename?: string;
   /** Epoch-ms send time of the carrying message (drives createdAt). */

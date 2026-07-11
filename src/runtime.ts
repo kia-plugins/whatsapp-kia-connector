@@ -3,13 +3,14 @@ import type { proto, WASocket } from '@whiskeysockets/baileys';
 import { dayKey, mergeMessages } from './chat-day';
 import { ContactBook } from './contacts';
 import type { Batch, LogLevel } from './kiagent-contracts';
-import { MEDIA_SIZE_CAP_BYTES } from './media';
+import { encodeMediaRef, MEDIA_SIZE_CAP_BYTES } from './media';
 import { normalizeWAMessage } from './messages';
 import { AsyncBatchQueue } from './queue';
 import { WhatsAppSocket } from './socket';
 import type {
   ChatInfo,
   DayItem,
+  MediaKind,
   NormalizedMessage,
   WhatsAppCursor,
   WhatsAppItem,
@@ -91,6 +92,7 @@ interface PendingMedia {
   day: string;
   msgId: string;
   wm: proto.IWebMessageInfo;
+  mediaKind: MediaKind;
   filename?: string;
   mimeType?: string;
   sentAtMs: number;
@@ -371,6 +373,7 @@ export class WhatsAppPullRuntime {
           day,
           msgId: norm.id,
           wm,
+          mediaKind: norm.media.kind,
           filename: norm.media.filename,
           mimeType: norm.media.mimeType,
           sentAtMs: norm.tsMs,
@@ -637,6 +640,8 @@ export class WhatsAppPullRuntime {
       day: m.day,
       msgId: m.msgId,
       bytes,
+      mediaKind: m.mediaKind,
+      mediaRef: encodeMediaRef(m.wm),
       mimeType: m.mimeType,
       filename: m.filename,
       sentAtMs: m.sentAtMs,

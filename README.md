@@ -59,7 +59,13 @@ so the connector pairs with a web-browser identity instead.
 - **Media files** (images, video, audio, documents, stickers) up to **25 MiB**
   download in the background — one at a time, to stay gentle — and land as
   `file` documents parented under their chat-day, with the bytes handed to the
-  platform's converters/OCR.
+  platform's converters/OCR. File docs carry deep-extraction metadata
+  (`mime`, `sizeBytes`, `filename`, `ext` — nameless media gets a synthetic
+  name like `voice-note.ogg` or `photo.jpg`) so the platform's vision (OCR)
+  and audio-transcription workers pick them up, plus a `wa_msg` ref (the
+  proto-encoded message) that `fetchBytes` decodes to re-download the media
+  on demand — WhatsApp media expires upstream, so a stale ref can come back
+  empty and the doc simply stays unextracted.
 - History: opening the socket streams WhatsApp's full history sync (that is
   the backfill); afterwards live messages arrive in realtime over the same
   long-lived socket.

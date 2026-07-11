@@ -14,6 +14,7 @@ import type { WASocket } from '@whiskeysockets/baileys';
 import { isAuthError } from '../auth-error';
 import { makeFreshAuthState } from '../auth-state';
 import { dayKey } from '../chat-day';
+import { decodeMediaRef } from '../media';
 import type {
   Account,
   Batch,
@@ -475,7 +476,9 @@ describe('pull — media', () => {
     });
     expect(Buffer.from(file.bytes).toString()).toBe('img-bytes');
 
-    // The mapped file document: binary bytes, parent edge, no markdown.
+    // The mapped file document: binary bytes, parent edge, no markdown, and
+    // deep-extraction metadata under the core convention (mime/sizeBytes/
+    // filename/ext) so kiagent-core's vision classifier matches it.
     const doc = h.source.toDocument(file) as Exclude<
       ReturnType<typeof h.source.toDocument>,
       unknown[] | null
@@ -483,21 +486,92 @@ describe('pull — media', () => {
     expect(doc).toMatchObject({
       externalId: `${ALICE}:IMG1`,
       type: 'file',
-      title: 'attachment',
+      title: 'photo.jpg',
       markdown: null,
       parent: { externalId: `${ALICE}:${DAY}`, type: 'whatsapp.chat_day' },
       createdAt: new Date(T0_SEC * 1000).toISOString(),
     });
-    expect(doc.binary).toMatchObject({ mime: 'image/jpeg' });
+    expect(doc.binary).toMatchObject({ mime: 'image/jpeg', filename: 'photo.jpg' });
     expect(doc.metadata).toMatchObject({
       chat_key: ALICE,
-      size_bytes: 9,
-      mime_type: 'image/jpeg',
+      sizeBytes: 9,
+      mime: 'image/jpeg',
+      filename: 'photo.jpg',
+      ext: 'jpg',
     });
+    // The persisted proto ref that fetchBytes decodes to re-download later.
+    expect(typeof (doc.metadata as { wa_msg?: unknown }).wa_msg).toBe('string');
     // Day markdown carries the label, never a doc:// link (v2 deviation).
     const dayDoc = h.source.toDocument(day) as { markdown: string };
     expect(dayDoc.markdown).toContain('[image]');
     expect(dayDoc.markdown).not.toContain('doc://');
+
+    void h.controller.abort();
+    while (!(await h.it.next()).done) {
+      /* drain */
+    }
+  });
+
+  it('emits a voice note as a transcription-ready file doc (mime, ext, synthetic filename, wa_msg ref)', async () => {
+    const h = await harness({
+      downloadMedia: async () => Buffer.from('opus-bytes'),
+    });
+    const pending = h.it.next();
+    await waitFor(() => h.state.made === 1);
+
+    h.ev.emit('messages.upsert', {
+      type: 'notify',
+      messages: [
+        {
+          key: { id: 'VN1', remoteJid: ALICE },
+          messageTimestamp: T0_SEC,
+          message: {
+            audioMessage: {
+              mimetype: 'audio/ogg; codecs=opus',
+              seconds: 42,
+              ptt: true,
+              directPath: '/v/t62/xyz',
+              mediaKey: new Uint8Array([1, 2, 3]),
+            },
+          },
+        },
+      ],
+    });
+
+    const batches: WABatch[] = [await nextBatch(h.it, pending)];
+    while (!batches.some((x) => x.items.some((i) => i.kind === 'file'))) {
+      batches.push(await nextBatch(h.it));
+    }
+    const file = batches
+      .flatMap((x) => x.items)
+      .find((i): i is FileItem => i.kind === 'file')!;
+
+    const doc = h.source.toDocument(file) as Exclude<
+      ReturnType<typeof h.source.toDocument>,
+      unknown[] | null
+    >;
+    // Voice notes have no filename and a parameterized mime — the doc must
+    // still land classifiable: audio/* mime, an ext for the transcode hint,
+    // and a synthetic filename standing in for WhatsApp's absent one.
+    expect(doc).toMatchObject({ title: 'voice-note.ogg', markdown: null });
+    expect(doc.metadata).toMatchObject({
+      mime: 'audio/ogg',
+      ext: 'ogg',
+      filename: 'voice-note.ogg',
+      sizeBytes: 10,
+    });
+    // The ref round-trips the decryption material fetchBytes needs.
+    const back = decodeMediaRef((doc.metadata as { wa_msg: string }).wa_msg);
+    expect(back).not.toBeNull();
+    expect(
+      Array.from(back!.message!.audioMessage!.mediaKey as Uint8Array),
+    ).toEqual([1, 2, 3]);
+    // The day doc keeps its placeholder label.
+    const day = batches
+      .flatMap((x) => x.items)
+      .find((i): i is DayItem => i.kind === 'day')!;
+    const dayDoc = h.source.toDocument(day) as { markdown: string };
+    expect(dayDoc.markdown).toContain('[voice note 0:42]');
 
     void h.controller.abort();
     while (!(await h.it.next()).done) {
