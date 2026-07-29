@@ -27,14 +27,14 @@ describe('chat-day', () => {
   it('merges by id, keeping one copy and sorting by ts', () => {
     const a = msg({ id: 'm1', tsMs: 2 });
     const b = msg({ id: 'm2', tsMs: 1, sender: 'Bob', text: 'hi' });
-    const merged = mergeMessages([a], [b, { ...a }]);
+    const merged = mergeMessages([a], [b, { ...a }], (m) => m.tsMs);
     expect(merged.map((m) => m.id)).toEqual(['m2', 'm1']);
   });
 
   it('lets incoming win on id conflict (live edit of a buffered message)', () => {
     const stale = msg({ id: 'm1', text: 'old' });
     const fresh = msg({ id: 'm1', text: 'new' });
-    expect(mergeMessages([stale], [fresh])[0].text).toBe('new');
+    expect(mergeMessages([stale], [fresh], (m) => m.tsMs)[0].text).toBe('new');
   });
 
   it('renders text, replies, media and system lines', () => {

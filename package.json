@@ -1,6 +1,6 @@
 {
   "name": "whatsapp-kia-connector",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "description": "WhatsApp connector for KIAgent (v2 extension platform, Baileys-based).",
   "license": "MIT",
   "private": false,
@@ -19,6 +19,7 @@
     "@whiskeysockets/baileys": "6.7.23"
   },
   "devDependencies": {
+    "@kiagent/connector-sdk": "https://github.com/edjafarov/kiagent-core/releases/download/sdk-v1.0.0/kiagent-connector-sdk-1.0.0.tgz",
     "@types/jest": "^29.5.12",
     "@types/node": "^20.11.0",
     "esbuild": "0.23.1",

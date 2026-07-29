@@ -11,17 +11,18 @@ import path from 'node:path';
 
 import type { WASocket } from '@whiskeysockets/baileys';
 
-import { isAuthError } from '../auth-error';
-import { makeFreshAuthState } from '../auth-state';
-import { dayKey } from '../chat-day';
-import { decodeMediaRef } from '../media';
 import type {
   Account,
   Batch,
   HostFor,
   LogLevel,
   Session,
-} from '../kiagent-contracts';
+} from '@kiagent/connector-sdk';
+
+import { isAuthError } from '../auth-error';
+import { makeFreshAuthState } from '../auth-state';
+import { dayKey } from '../chat-day';
+import { decodeMediaRef } from '../media';
 import { createWhatsAppSource } from '../source';
 import type {
   DayItem,

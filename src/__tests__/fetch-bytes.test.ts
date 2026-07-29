@@ -15,7 +15,8 @@ import type {
   Document,
   HostFor,
   Session,
-} from '../kiagent-contracts';
+} from '@kiagent/connector-sdk';
+
 import { encodeMediaRef, MEDIA_SIZE_CAP_BYTES } from '../media';
 import { createWhatsAppSource } from '../source';
 

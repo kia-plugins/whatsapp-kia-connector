@@ -1,32 +1,14 @@
-/** A single chat message after normalization from either ingest path. */
-export interface NormalizedMessage {
-  /** Stable id: the WhatsApp message id. */
-  id: string;
-  /** Epoch milliseconds. */
-  tsMs: number;
-  /** Display name of the sender, already resolved. null ⇒ system message. */
-  sender: string | null;
-  /** Plain text body (caption for media, '' for pure media/system). */
-  text: string;
-  /** Present when the message carries media. */
-  media?: MediaDescriptor;
-  /** Quoted/replied-to message, rendered inline. */
-  quote?: { sender: string | null; snippet: string };
-  /** True for WhatsApp system notices (e2e notice, "X added Y", etc.). */
-  system: boolean;
-}
+// NormalizedMessage/MediaKind/MediaDescriptor now live in the SDK's
+// chat-day module (identical shape to what this repo used to define
+// locally) — re-exported here so the rest of the repo keeps importing them
+// from './types'.
+import type {
+  NormalizedMessage,
+  MediaKind,
+  MediaDescriptor,
+} from '@kiagent/connector-sdk/chat-day';
 
-export type MediaKind = 'image' | 'video' | 'audio' | 'document' | 'sticker';
-
-export interface MediaDescriptor {
-  kind: MediaKind;
-  /** Original filename if known (document messages). */
-  filename?: string;
-  /** Mime type if known. */
-  mimeType?: string;
-  /** Duration seconds for audio/video, for the placeholder label. */
-  durationSec?: number;
-}
+export type { NormalizedMessage, MediaKind, MediaDescriptor };
 
 /** Resolved chat identity at flush time (name re-resolved on every build). */
 export interface ChatInfo {

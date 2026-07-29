@@ -1,8 +1,9 @@
 import type { proto, WASocket } from '@whiskeysockets/baileys';
 
+import type { Batch, LogLevel } from '@kiagent/connector-sdk';
+
 import { dayKey, mergeMessages } from './chat-day';
 import { ContactBook } from './contacts';
-import type { Batch, LogLevel } from './kiagent-contracts';
 import { encodeMediaRef, MEDIA_SIZE_CAP_BYTES } from './media';
 import { normalizeWAMessage } from './messages';
 import { AsyncBatchQueue } from './queue';
@@ -501,7 +502,11 @@ export class WhatsAppPullRuntime {
       }
       this.priorFetched.add(key);
       if (prior && prior.length > 0) {
-        const merged = mergeMessages(prior, [...ledger.byId.values()]);
+        const merged = mergeMessages(
+          prior,
+          [...ledger.byId.values()],
+          (m) => m.tsMs,
+        );
         ledger.byId = new Map(merged.map((m) => [m.id, m]));
       }
     }

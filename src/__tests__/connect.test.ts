@@ -5,8 +5,9 @@ import path from 'node:path';
 
 import type { AuthenticationState, WASocket } from '@whiskeysockets/baileys';
 
+import type { AuthChannel, HostFor } from '@kiagent/connector-sdk';
+
 import { loadAuthState } from '../auth-state';
-import type { AuthChannel, HostFor } from '../kiagent-contracts';
 import { createWhatsAppSource, PAIRING_BROWSER } from '../source';
 
 /**
@@ -58,6 +59,9 @@ function makeAuth() {
     showQr: (qr) => qrs.push(qr),
     prompt: async () => ({}),
     status: (msg) => statuses.push(msg),
+    pickFolders: async () => {
+      throw new Error('whatsapp connect must not use pickFolders');
+    },
   };
   return { auth, qrs, statuses };
 }

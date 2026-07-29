@@ -15,15 +15,7 @@ import makeWASocket, {
 } from '@whiskeysockets/baileys';
 import type { AuthenticationState, proto, WASocket } from '@whiskeysockets/baileys';
 
-import {
-  loadAuthState,
-  makeFreshAuthState,
-  plaintextCodec,
-  type AuthBlobCodec,
-} from './auth-state';
-import { DOC_TYPE, dayTitle, renderDay } from './chat-day';
-import { normalizeJid } from './contacts';
-import { SourceAuthError } from './kiagent-source-errors';
+import { SourceAuthError } from '@kiagent/connector-sdk';
 import type {
   AuthChannel,
   Batch,
@@ -32,7 +24,16 @@ import type {
   HostFor,
   Session,
   Source,
-} from './kiagent-contracts';
+} from '@kiagent/connector-sdk';
+
+import {
+  loadAuthState,
+  makeFreshAuthState,
+  plaintextCodec,
+  type AuthBlobCodec,
+} from './auth-state';
+import { DOC_TYPE, dayTitle, renderDay } from './chat-day';
+import { normalizeJid } from './contacts';
 import {
   attachmentFilename,
   decodeMediaRef,
