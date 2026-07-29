@@ -153,13 +153,19 @@ const textMsg = (id: string, sec: number, text: string, jid = ALICE) => ({
 describe('pull — pairing preconditions', () => {
   it('throws "not paired" when the account has no authFile config', async () => {
     const h = await harness({ authFile: null });
-    await expect(h.it.next()).rejects.toThrow(/not paired — reconnect/);
+    await expect(h.it.next()).rejects.toMatchObject({
+      message: expect.stringMatching(/not paired — reconnect/),
+      code: 'auth',
+    });
     expect(h.state.made).toBe(0); // never opened a socket
   });
 
   it('throws "not paired" when the blob file is missing', async () => {
     const h = await harness({ authFile: 'auth/never-written.bin' });
-    await expect(h.it.next()).rejects.toThrow(/not paired — reconnect/);
+    await expect(h.it.next()).rejects.toMatchObject({
+      message: expect.stringMatching(/not paired — reconnect/),
+      code: 'auth',
+    });
   });
 });
 
@@ -805,6 +811,7 @@ describe('pull — shutdown paths', () => {
     expect(thrown).toBeInstanceOf(Error);
     expect(String((thrown as Error).message)).toMatch(/logged out .*reconnect the account/);
     expect(isAuthError(thrown)).toBe(true);
+    expect((thrown as { code?: unknown }).code).toBe('auth');
     expect(fs.existsSync(blobPath)).toBe(true); // the "final persist" happened
   });
 

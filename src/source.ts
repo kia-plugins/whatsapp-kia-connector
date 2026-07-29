@@ -23,6 +23,7 @@ import {
 } from './auth-state';
 import { DOC_TYPE, dayTitle, renderDay } from './chat-day';
 import { normalizeJid } from './contacts';
+import { SourceAuthError } from './kiagent-source-errors';
 import type {
   AuthChannel,
   Batch,
@@ -166,13 +167,13 @@ export function createWhatsAppSource(
       const authFile = (session.account.config as { authFile?: unknown })
         ?.authFile;
       if (typeof authFile !== 'string' || authFile.length === 0) {
-        throw new Error(NOT_PAIRED);
+        throw new SourceAuthError(NOT_PAIRED);
       }
       const loaded = loadAuthState(path.join(host.self.dataDir, authFile), {
         codec,
         warn: (msg) => session.log('warn', msg),
       });
-      if (!loaded) throw new Error(NOT_PAIRED);
+      if (!loaded) throw new SourceAuthError(NOT_PAIRED);
 
       const selfJid = normalizeJid(
         loaded.state.creds.me?.id ?? 'unknown@s.whatsapp.net',
@@ -227,13 +228,12 @@ export function createWhatsAppSource(
         await runtime.stop();
       }
       if (runtime.loggedOut) {
-        // Auth error propagates (engine records lastError); shaped so
-        // isAuthError()-style checks recognize it.
-        const err = new Error(
+        // Auth error propagates (engine records lastError, commits
+        // needsReauth, stops retrying) — the engine keys off `code`, never
+        // `instanceof` or a `.status` shape.
+        throw new SourceAuthError(
           'whatsapp: logged out (401 unauthenticated) — reconnect the account',
-        ) as Error & { status: number };
-        err.status = 401;
-        throw err;
+        );
       }
     },
 
