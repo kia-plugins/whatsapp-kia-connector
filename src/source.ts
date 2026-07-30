@@ -249,7 +249,6 @@ export function createWhatsAppSource(
           markdown: renderDay(messages),
           url: `whatsapp://chat?jid=${encodeURIComponent(chat.jid)}`,
           metadata: {
-            chat_jid: chat.jid,
             chat_key: chat.jid,
             chat_key_kind: 'jid',
             chat_type: chat.type,

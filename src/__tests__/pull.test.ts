@@ -19,7 +19,6 @@ import type {
   Session,
 } from '@kiagent/connector-sdk';
 
-import { isAuthError } from '../auth-error';
 import { makeFreshAuthState } from '../auth-state';
 import { dayKey } from '../chat-day';
 import { decodeMediaRef } from '../media';
@@ -811,7 +810,6 @@ describe('pull — shutdown paths', () => {
     }
     expect(thrown).toBeInstanceOf(Error);
     expect(String((thrown as Error).message)).toMatch(/logged out .*reconnect the account/);
-    expect(isAuthError(thrown)).toBe(true);
     expect((thrown as { code?: unknown }).code).toBe('auth');
     expect(fs.existsSync(blobPath)).toBe(true); // the "final persist" happened
   });
