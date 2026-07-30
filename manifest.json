@@ -2,7 +2,7 @@
   "id": "kia.whatsapp",
   "name": "WhatsApp",
   "version": "2.1.3",
-  "engine": "^1.2.0",
+  "engine": ">=1.2.0 <3.0.0",
   "entry": "dist/index.js",
   "caps": [
     "net",
@@ -11,7 +11,8 @@
   "contributes": {
     "sources": [
       "whatsapp"
-    ]
+    ],
+    "senders": []
   },
   "icon": "icon.png"
 }

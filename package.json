@@ -1,6 +1,6 @@
 {
   "name": "whatsapp-kia-connector",
-  "version": "2.1.3",
+  "version": "2.1.4",
   "description": "WhatsApp connector for KIAgent (v2 extension platform, Baileys-based).",
   "license": "MIT",
   "private": false,
