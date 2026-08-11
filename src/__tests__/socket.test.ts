@@ -125,6 +125,37 @@ describe('WhatsAppSocket', () => {
     expect(state.calls).toBe(2);
   });
 
+  it('logs the close status code on a transient close', async () => {
+    // 1 708 reconnects over 13h on a user's machine told us nothing about WHY
+    // WhatsApp kept refusing the login, because Baileys never logs the code.
+    jest.useFakeTimers();
+    const { state, factory } = countingBaileys();
+    const logs: string[] = [];
+    const s = new WhatsAppSocket({
+      makeSocket: factory,
+      reconnectBaseMs: 1000,
+      reconnectCapMs: 30000,
+      onQr: () => {},
+      onConnected: () => {},
+      onLoggedOut: () => {},
+      onMessages: () => {},
+      onHistory: () => {},
+      onLog: (level, msg) => logs.push(`${level}: ${msg}`),
+    });
+    await s.start();
+    state.ev!.emit('connection.update', {
+      connection: 'close',
+      lastDisconnect: {
+        error: Object.assign(new Error('Connection Failure'), {
+          output: { statusCode: 405 },
+        }),
+      },
+    });
+    expect(logs).toEqual([
+      'warn: whatsapp: connection closed (statusCode 405: Connection Failure) — reconnecting',
+    ]);
+  });
+
   it('logs and reschedules when a reconnect attempt itself throws (no silent zombie)', async () => {
     // Real timers with tiny backoff: attempt 2 throws inside start(), the
     // catch must reschedule so attempt 3 still happens.

@@ -91,6 +91,11 @@ reactions are not indexed, stories/status broadcasts are skipped.
 - Unlinking the device from your phone (or removing the account in KIAgent)
   invalidates the session; the connector then reports the account as needing
   a reconnect.
+- The connector fetches WhatsApp's current web protocol version from
+  `raw.githubusercontent.com` when a session starts, and caches the last
+  version that WhatsApp accepted in `wa-version.json` under the same data
+  directory. That file holds three integers and no personal data; deleting it
+  only costs one fetch.
 
 ## Changes from the v1 connector
 

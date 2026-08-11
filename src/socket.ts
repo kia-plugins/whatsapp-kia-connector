@@ -49,6 +49,11 @@ export function statusCodeOf(err: unknown): number | undefined {
     ?.statusCode;
 }
 
+function errText(e: unknown): string {
+  if (e === undefined || e === null) return 'no error';
+  return e instanceof Error ? e.message : String(e);
+}
+
 /** Owns one Baileys socket and translates its events into callbacks. */
 export class WhatsAppSocket {
   private sock?: WASocket;
@@ -80,6 +85,16 @@ export class WhatsAppSocket {
         if (code === DisconnectReason.loggedOut || code === 401) {
           this.deps.onLoggedOut();
         } else if (!this.closed) {
+          // The status code is the whole diagnosis when a reconnect loop runs
+          // for hours (a rejected protocol version and a wedged network look
+          // identical without it), and Baileys never logs it. Warn, don't
+          // error: a single drop is routine.
+          this.deps.onLog?.(
+            'warn',
+            `whatsapp: connection closed (statusCode ${code ?? 'none'}: ${
+              errText(u.lastDisconnect?.error)
+            }) — reconnecting`,
+          );
           // Transient close: the old socket is dead. Real Baileys discards it,
           // so the reconnect makes a fresh socket (new emitter) via the
           // factory — no handler accumulates on a reused emitter.

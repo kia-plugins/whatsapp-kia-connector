@@ -27,6 +27,12 @@ import type {
 } from '@kiagent/connector-sdk';
 
 import {
+  fileVersionCache,
+  VersionResolver,
+  type VersionLog,
+} from './version';
+
+import {
   loadAuthState,
   makeFreshAuthState,
   plaintextCodec,
@@ -52,8 +58,12 @@ export type WhatsAppHost = HostFor<'net' | 'query'>;
 /** Test seams — production callers omit all of these. */
 export interface WhatsAppSourceSeams {
   /** Socket factory factory: resolves Baileys version, returns the per-
-   *  (re)connect socket maker. Tests return a fake-socket maker. */
-  makeSocketFactory?: (auth: AuthenticationState) => Promise<() => WASocket>;
+   *  (re)connect socket maker. Tests return a fake-socket maker. The optional
+   *  log carries version diagnostics into the account's session log. */
+  makeSocketFactory?: (
+    auth: AuthenticationState,
+    log?: VersionLog,
+  ) => Promise<() => WASocket>;
   downloadMedia?: (
     wm: proto.IWebMessageInfo,
     signal: AbortSignal,
@@ -78,29 +88,48 @@ export interface WhatsAppSourceSeams {
  */
 export const PAIRING_BROWSER = Browsers.ubuntu('Chrome');
 
+/** Last-known-good protocol version, under the extension's dataDir. */
+export const VERSION_CACHE_FILE = 'wa-version.json';
+
 /**
- * Best-effort protocol version: fetchLatestBaileysVersion raced against 3s —
- * on timeout/failure Baileys falls back to its baked-in default (v1 parity).
+ * Production socket factory. One resolver per source instance, so every account
+ * and every reconnect shares the same (refreshing) protocol version — see
+ * version.ts for the two outages that shaped this.
  */
-async function defaultSocketFactory(
-  auth: AuthenticationState,
-): Promise<() => WASocket> {
-  const version = await Promise.race([
-    fetchLatestBaileysVersion()
-      .then((r) => r.version)
-      .catch(() => undefined),
-    new Promise<undefined>((resolve) => {
-      const t = setTimeout(() => resolve(undefined), 3000);
-      t.unref?.();
-    }),
-  ]);
-  return () =>
-    makeWASocket({
-      version,
-      auth,
-      browser: PAIRING_BROWSER,
-      syncFullHistory: true,
-    });
+export function createDefaultSocketFactory(
+  dataDir: string,
+): (auth: AuthenticationState, log?: VersionLog) => Promise<() => WASocket> {
+  const resolver = new VersionResolver({
+    cache: fileVersionCache(path.join(dataDir, VERSION_CACHE_FILE)),
+    fetchVersion: () => fetchLatestBaileysVersion().then((r) => r.version),
+  });
+
+  return async (auth, log) => {
+    await resolver.init(log);
+    return () => {
+      // Read per (re)connect, not once per session: a session that opened
+      // during a network outage heals on its next reconnect instead of
+      // reusing a captured bad version until the engine restarts it.
+      const version = resolver.current();
+      const sock = makeWASocket({
+        // Omit the key ENTIRELY when there's no version. makeWASocket spreads
+        // `{...DEFAULT_CONNECTION_CONFIG, ...config}`, so an explicit
+        // `undefined` overwrites the baked-in default rather than falling back
+        // to it, and getUserAgent then throws on config.version[0].
+        ...(version ? { version } : {}),
+        auth,
+        browser: PAIRING_BROWSER,
+        syncFullHistory: true,
+      });
+      // A reached 'open' is the only proof WhatsApp still accepts this version.
+      // Extra listener on a socket that is discarded at every reconnect — the
+      // emitter is fresh per call, so nothing accumulates.
+      sock.ev.on('connection.update', (u) => {
+        if (u.connection === 'open') resolver.noteAccepted(version);
+      });
+      return sock;
+    };
+  };
 }
 
 /** '4917012345@s.whatsapp.net' → a safe blob filename stem. */
@@ -120,7 +149,8 @@ export function createWhatsAppSource(
   host: WhatsAppHost,
   seams: WhatsAppSourceSeams = {},
 ): Source<WhatsAppCursor, WhatsAppItem> {
-  const makeSocketFactory = seams.makeSocketFactory ?? defaultSocketFactory;
+  const makeSocketFactory =
+    seams.makeSocketFactory ?? createDefaultSocketFactory(host.self.dataDir);
   const downloadMedia = seams.downloadMedia ?? defaultDownloadMedia;
   const codec = seams.codec ?? plaintextCodec;
 
@@ -179,7 +209,9 @@ export function createWhatsAppSource(
       const selfJid = normalizeJid(
         loaded.state.creds.me?.id ?? 'unknown@s.whatsapp.net',
       );
-      const makeSocket = await makeSocketFactory(loaded.state);
+      const makeSocket = await makeSocketFactory(loaded.state, (level, msg) =>
+        session.log(level, msg),
+      );
       const runtime = new WhatsAppPullRuntime({
         makeSocket,
         saveCreds: loaded.saveCreds,
