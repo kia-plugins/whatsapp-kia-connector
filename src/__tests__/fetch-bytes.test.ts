@@ -20,12 +20,19 @@ import type {
 import { encodeMediaRef, MEDIA_SIZE_CAP_BYTES } from '../media';
 import { createWhatsAppSource } from '../source';
 
+const EMPTY_NET_RESULT = {
+  status: 200,
+  statusText: 'OK',
+  headers: {},
+  body: new Uint8Array(),
+};
+
 function makeHost(): HostFor<'net' | 'query'> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-fetch-'));
   return {
     self: { id: 'kia.whatsapp', dataDir: dir },
     log: () => {},
-    net: { fetch: async () => ({}) },
+    net: { fetch: async () => EMPTY_NET_RESULT },
     query: { byExternalId: async () => null } as never,
   };
 }
@@ -72,6 +79,7 @@ function fileDoc(metadata: Record<string, unknown>): Document {
     ingestedAt: '',
     updatedAt: '',
     createdAt: null,
+    scopeRootId: null,
     metadata,
   } as Document;
 }

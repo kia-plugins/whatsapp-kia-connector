@@ -385,7 +385,14 @@ describe('pull — store-merge (survives restarts without re-delivery)', () => {
       {
         self: { id: 'kia.whatsapp', dataDir: h.dir },
         log: () => {},
-        net: { fetch: async () => ({}) },
+        net: {
+          fetch: async () => ({
+            status: 200,
+            statusText: 'OK',
+            headers: {},
+            body: new Uint8Array(),
+          }),
+        },
         query: query as never,
       },
       {
