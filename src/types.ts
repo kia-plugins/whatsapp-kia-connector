@@ -23,6 +23,9 @@ export interface ChatInfo {
 export interface WhatsAppCursor {
   /** Highest message timestamp (ms) ingested so far. */
   lastTsMs: number;
+  /** Set once stored day docs were re-emitted with reply targets
+   *  (outbound.ts migration). Absent → pull() migrates first. */
+  outbound?: 1;
 }
 
 /** One (chat, local-day) document with its COMPLETE merged message ledger. */

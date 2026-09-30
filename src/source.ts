@@ -40,6 +40,8 @@ import {
 } from './auth-state';
 import { DOC_TYPE, dayTitle, renderDay } from './chat-day';
 import { normalizeJid } from './contacts';
+import { markLoggedOut, registerLive } from './live';
+import { migrationItems, outboundFor } from './outbound';
 import {
   attachmentFilename,
   decodeMediaRef,
@@ -242,12 +244,30 @@ export function createWhatsAppSource(
         reconnectCapMs: seams.reconnectCapMs,
       });
 
+      // One-time backfill of reply targets (outbound.ts): day docs stored
+      // before reply support are re-emitted from the store — WhatsApp may
+      // replay no history at all on a resumed session. The flag commits
+      // with the last chunk; an interrupted run simply migrates again.
+      // A new account (null cursor) has nothing stored to migrate — and an
+      // empty batch here would commit 'live' before its history arrives.
+      if (cursor !== null && cursor.outbound !== 1) {
+        const base = { lastTsMs: cursor.lastTsMs };
+        for await (const chunk of migrationItems(host, session.account.id, Date.now())) {
+          if (session.signal.aborted) return;
+          yield { phase: 'live', items: chunk, cursor: base };
+        }
+        yield { phase: 'live', items: [], cursor: { ...base, outbound: 1 } };
+      }
+
       if (session.signal.aborted) return;
       // Abort → stop the socket, final flush lands as the last batch(es),
       // queue closes, the drain loop below ends, generator returns.
       const onAbort = (): void => {
+        unregister();
         void runtime.stop();
       };
+      // The Sender reaches this account's one socket through here.
+      const unregister = registerLive(session.account.id, runtime);
       session.signal.addEventListener('abort', onAbort, { once: true });
       try {
         await runtime.start();
@@ -257,10 +277,12 @@ export function createWhatsAppSource(
           yield batch;
         }
       } finally {
+        unregister();
         session.signal.removeEventListener('abort', onAbort);
         await runtime.stop();
       }
       if (runtime.loggedOut) {
+        markLoggedOut(session.account.id);
         // Auth error propagates (engine records lastError, commits
         // needsReauth, stops retrying) — the engine keys off `code`, never
         // `instanceof` or a `.status` shape.
@@ -274,6 +296,7 @@ export function createWhatsAppSource(
       if (item.kind === 'day') {
         const { chat, day, messages } = item;
         const last = messages[messages.length - 1];
+        const outbound = outboundFor(chat);
         return {
           externalId: `${chat.jid}:${day}`,
           type: DOC_TYPE,
@@ -284,6 +307,9 @@ export function createWhatsAppSource(
             chat_key: chat.jid,
             chat_key_kind: 'jid',
             chat_type: chat.type,
+            chat_name: chat.name,
+            // Reply target for kiagent-core's draft_reply (outbound.ts).
+            ...(outbound ? { outbound } : {}),
             last_message_at: last ? new Date(last.tsMs).toISOString() : null,
             // Retained in full: the durable per-day ledger the next run
             // merges against (loadPriorMessages).

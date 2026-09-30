@@ -1,4 +1,4 @@
-import { DisconnectReason } from '@whiskeysockets/baileys';
+import { DisconnectReason, generateMessageID } from '@whiskeysockets/baileys';
 import type { WASocket } from '@whiskeysockets/baileys';
 
 export interface WhatsAppSocketDeps {
@@ -54,11 +54,25 @@ function errText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+/** The server's acknowledgement of a message this socket sent. */
+/** The one "provably unsent: no open socket" wording (kiagent-core
+ *  error-copy.ts `not sent:`), shared by socket, runtime and sender. */
+export const NOT_CONNECTED = "not sent: WhatsApp isn't connected right now — try again in a moment";
+const ACK_EVENT = 'CB:ack,class:message';
+
+interface AckNode {
+  attrs?: { id?: string; error?: string };
+}
+
 /** Owns one Baileys socket and translates its events into callbacks. */
 export class WhatsAppSocket {
   private sock?: WASocket;
 
   private closed = false;
+
+  /** True between `connection: 'open'` and the next close/stop — the only
+   *  window in which a send may start. */
+  private open = false;
 
   private reconnectAttempts = 0;
 
@@ -74,11 +88,13 @@ export class WhatsAppSocket {
     sock.ev.on('connection.update', (u) => {
       if (u.qr) this.deps.onQr(u.qr);
       if (u.connection === 'open') {
+        this.open = true;
         // Healthy session: reset backoff so a later drop retries from scratch.
         this.reconnectAttempts = 0;
         this.deps.onConnected();
       }
       if (u.connection === 'close') {
+        this.open = false;
         const code = statusCodeOf(u.lastDisconnect?.error);
         // DisconnectReason.loggedOut === 401; the extra literal is
         // belt-and-suspenders for fakes/forks that emit a bare 401.
@@ -141,8 +157,74 @@ export class WhatsAppSocket {
     }, wait);
   }
 
+  get isOpen(): boolean {
+    return this.open && !this.closed;
+  }
+
+  /**
+   * Send one text message on the CURRENT socket and resolve with its id only
+   * once WhatsApp's server ACKNOWLEDGED it — `sendMessage` resolving means
+   * the stanza was written, not accepted. The ack listener is attached before
+   * sending, under a pre-generated id.
+   *
+   * One deadline covers preparation (device/group lookups can take up to
+   * Baileys' 60 s query timeout) AND the ack. At the deadline the socket is
+   * ENDED — the runtime reconnects on its own — so a send still being
+   * prepared can never go out after the caller was told it failed.
+   */
+  sendText(jid: string, text: string, deadlineMs: number): Promise<string> {
+    const sock = this.sock;
+    if (!sock || !this.isOpen)
+      return Promise.reject(
+        new Error(NOT_CONNECTED),
+      );
+    const id = generateMessageID();
+    const ws = sock.ws as unknown as {
+      on(ev: string, cb: (node: AckNode) => void): void;
+      off(ev: string, cb: (node: AckNode) => void): void;
+    };
+    return new Promise<string>((resolve, reject) => {
+      let settled = false;
+      const finish = (fn: () => void): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        ws.off(ACK_EVENT, onAck);
+        fn();
+      };
+      const onAck = (node: AckNode): void => {
+        if (node?.attrs?.id !== id) return;
+        const error = node.attrs.error;
+        finish(() =>
+          error
+            ? reject(new Error(`WhatsApp answered the message with error ${error}`))
+            : resolve(id),
+        );
+      };
+      const timer = setTimeout(
+        () =>
+          finish(() => {
+            try {
+              sock.end(new Error('whatsapp: send deadline passed'));
+            } catch {
+              /* already down */
+            }
+            reject(new Error('WhatsApp did not confirm the message in time'));
+          }),
+        deadlineMs,
+      );
+      ws.on(ACK_EVENT, onAck);
+      sock
+        .sendMessage(jid, { text }, { messageId: id })
+        .catch((e: unknown) =>
+          finish(() => reject(e instanceof Error ? e : new Error(String(e)))),
+        );
+    });
+  }
+
   async stop(): Promise<void> {
     this.closed = true;
+    this.open = false;
     // Cancel any queued reconnect so it can't fire after an intentional stop.
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     try {

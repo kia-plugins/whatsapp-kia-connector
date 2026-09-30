@@ -7,7 +7,7 @@ import { ContactBook } from './contacts';
 import { encodeMediaRef, MEDIA_SIZE_CAP_BYTES } from './media';
 import { normalizeWAMessage } from './messages';
 import { AsyncBatchQueue } from './queue';
-import { WhatsAppSocket } from './socket';
+import { NOT_CONNECTED, WhatsAppSocket } from './socket';
 import type {
   ChatInfo,
   DayItem,
@@ -248,6 +248,14 @@ export class WhatsAppPullRuntime {
     await this.socket.start();
   }
 
+  /** Send through this account's one live socket (sender.ts). Refused —
+   *  provably unsent — once stopping or while the socket is not open. */
+  sendText(jid: string, text: string, deadlineMs: number): Promise<string> {
+    if (this.closed)
+      return Promise.reject(new Error(NOT_CONNECTED));
+    return this.socket.sendText(jid, text, deadlineMs);
+  }
+
   /** Next ready batch; null once stopped and drained (pull() then returns). */
   nextBatch(): Promise<WhatsAppBatch | null> {
     return this.queue.next();
@@ -451,7 +459,10 @@ export class WhatsAppPullRuntime {
     this.queue.push({
       phase: this.phase(),
       items,
-      cursor: { lastTsMs: this.lastTsMs },
+      // pull() re-emitted the stored day docs with reply targets before
+      // this runtime started (outbound.ts migration) — every later cursor
+      // carries that fact.
+      cursor: { lastTsMs: this.lastTsMs, outbound: 1 },
     });
   }
 

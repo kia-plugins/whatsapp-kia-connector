@@ -22,6 +22,7 @@ import type {
 import { makeFreshAuthState } from '../auth-state';
 import { dayKey } from '../chat-day';
 import { decodeMediaRef } from '../media';
+import { liveRuntime } from '../live';
 import { createWhatsAppSource } from '../source';
 import type {
   DayItem,
@@ -58,6 +59,8 @@ interface HarnessOpts {
   /** Omit/point the account config somewhere broken. */
   authFile?: string | null;
   cursor?: WhatsAppCursor | null;
+  /** Stored day docs the reply-target migration pages through. */
+  stored?: Array<{ externalId: string; title: string; createdAt: string; metadata: Record<string, unknown> }>;
 }
 
 async function harness(opts: HarnessOpts = {}) {
@@ -101,6 +104,8 @@ async function harness(opts: HarnessOpts = {}) {
         const messages = opts.prior?.[externalId];
         return messages ? ({ metadata: { messages } } as never) : null;
       },
+      search: async (q: { offset?: number; limit?: number }) =>
+        (opts.stored ?? []).slice(q.offset ?? 0, (q.offset ?? 0) + (q.limit ?? 50)),
     } as unknown as HostFor<'net' | 'query'>['query'],
   };
 
@@ -129,7 +134,9 @@ async function harness(opts: HarnessOpts = {}) {
   };
 
   const it = source
-    .pull(session, opts.cursor ?? null)
+    // Default: an account already migrated to reply targets — the
+    // migration has its own tests below.
+    .pull(session, opts.cursor === undefined ? { lastTsMs: 0, outbound: 1 } : opts.cursor)
     [Symbol.asyncIterator]();
 
   return { dir, authFile, ev, state, queried, source, controller, logs, it };
@@ -186,7 +193,7 @@ describe('pull — history backfill and live flip', () => {
 
     const batch = await nextBatch(h.it, pending);
     expect(batch.phase).toBe('backfill');
-    expect(batch.cursor).toEqual({ lastTsMs: (T0_SEC + 60) * 1000 });
+    expect(batch.cursor).toEqual({ lastTsMs: (T0_SEC + 60) * 1000, outbound: 1 });
     expect(batch.items).toHaveLength(1);
     const day = batch.items[0] as DayItem;
     expect(day.kind).toBe('day');
@@ -236,7 +243,7 @@ describe('pull — history backfill and live flip', () => {
     const second = await nextBatch(h.it);
     expect(second.phase).toBe('live');
     expect((second.items[0] as DayItem).messages.map((m) => m.id)).toEqual(['H1', 'L1']);
-    expect(second.cursor).toEqual({ lastTsMs: (T0_SEC + 120) * 1000 });
+    expect(second.cursor).toEqual({ lastTsMs: (T0_SEC + 120) * 1000, outbound: 1 });
 
     // A late history chunk after the live flip still yields phase 'live'.
     h.ev.emit('messaging-history.set', {
@@ -271,7 +278,7 @@ describe('pull — history backfill and live flip', () => {
     const marker = await nextBatch(h.it);
     expect(marker.phase).toBe('live');
     expect(marker.items).toHaveLength(0);
-    expect(marker.cursor).toEqual({ lastTsMs: T0_SEC * 1000 });
+    expect(marker.cursor).toEqual({ lastTsMs: T0_SEC * 1000, outbound: 1 });
 
     // History re-delivered after the flip (e.g. a reconnect) stays 'live'.
     h.ev.emit('messaging-history.set', {
@@ -312,7 +319,7 @@ describe('pull — history backfill and live flip', () => {
 
   it('does not regress the cursor below the incoming floor', async () => {
     const floor = (T0_SEC + 9999) * 1000;
-    const h = await harness({ cursor: { lastTsMs: floor } });
+    const h = await harness({ cursor: { lastTsMs: floor, outbound: 1 } });
     const pending = h.it.next();
     await waitFor(() => h.state.made === 1);
     h.ev.emit('messaging-history.set', {
@@ -321,7 +328,7 @@ describe('pull — history backfill and live flip', () => {
       messages: [textMsg('H1', T0_SEC, 'older than the floor')],
     });
     const batch = await nextBatch(h.it, pending);
-    expect(batch.cursor).toEqual({ lastTsMs: floor });
+    expect(batch.cursor).toEqual({ lastTsMs: floor, outbound: 1 });
 
     void h.controller.abort();
     while (!(await h.it.next()).done) {
@@ -423,7 +430,7 @@ describe('pull — store-merge (survives restarts without re-delivery)', () => {
       credentials: async () => null,
       log: () => {},
     };
-    const it = source.pull(session, null)[Symbol.asyncIterator]();
+    const it = source.pull(session, { lastTsMs: 0, outbound: 1 })[Symbol.asyncIterator]();
     const pending = it.next();
     await waitFor(() => h.state.made >= 1);
 
@@ -834,5 +841,66 @@ describe('pull — shutdown paths', () => {
     void h.controller.abort();
     let r = await pending;
     while (!r.done) r = await h.it.next();
+  });
+});
+
+describe('pull — reply targets', () => {
+  const stored = [
+    {
+      externalId: `${ALICE}:2026-09-29`,
+      title: 'Alice — Sep 29, 2026',
+      createdAt: new Date().toISOString(),
+      metadata: {
+        chat_key: ALICE,
+        chat_type: 'dm',
+        messages: [{ id: 'X1', tsMs: 1, sender: 'Alice', text: 'hi', system: false }],
+      },
+    },
+  ];
+
+  it('an account from before reply support first re-emits its stored day docs with targets, then commits the flag', async () => {
+    const h = await harness({ cursor: { lastTsMs: 5 }, stored });
+    const migrated = await nextBatch(h.it);
+    expect(migrated.cursor).toEqual({ lastTsMs: 5 }); // flag not yet
+    const doc = h.source.toDocument(migrated.items[0]) as { metadata: Record<string, unknown> };
+    expect(doc.metadata.outbound).toEqual({ ref: { jid: ALICE }, display: 'Alice' });
+    const done = await nextBatch(h.it);
+    expect(done.items).toEqual([]);
+    expect(done.cursor).toEqual({ lastTsMs: 5, outbound: 1 });
+    expect(h.state.made).toBe(0); // the socket opens only after the migration
+    void h.controller.abort();
+    while (!(await h.it.next()).done);
+  });
+
+  it('a new account (null cursor) has nothing to migrate and yields no early "live" batch', async () => {
+    const h = await harness({ cursor: null, stored });
+    const pending = h.it.next();
+    await waitFor(() => h.state.made === 1); // straight to the socket
+    void h.controller.abort();
+    const first = await pending.catch(() => null);
+    expect(first?.value?.items?.length ?? 0).toBe(0); // no re-emitted stored docs
+    expect(first?.value?.cursor ?? null).not.toEqual({ lastTsMs: 0, outbound: 1 });
+    while (!(await h.it.next()).done);
+  });
+
+  it('a migrated account skips the migration', async () => {
+    const h = await harness({ stored });
+    const pending = h.it.next();
+    await waitFor(() => h.state.made === 1);
+    expect(liveRuntime('acc-1')).toBeDefined();
+    void h.controller.abort();
+    await pending.catch(() => {});
+    while (!(await h.it.next()).done);
+  });
+
+  it('registers its runtime for the Sender while pulling, and drops it on abort', async () => {
+    const h = await harness();
+    const pending = h.it.next();
+    await waitFor(() => h.state.made === 1);
+    expect(liveRuntime('acc-1')).toBeDefined();
+    void h.controller.abort();
+    expect(liveRuntime('acc-1')).toBeUndefined(); // synchronously, before the socket winds down
+    await pending.catch(() => {});
+    while (!(await h.it.next()).done);
   });
 });
