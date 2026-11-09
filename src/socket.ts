@@ -34,6 +34,8 @@ export interface WhatsAppSocketDeps {
   }) => void;
   /** Live contact add/rename (contacts.upsert / contacts.update). Optional. */
   onContacts?: (contacts: unknown[]) => void;
+  /** A LID ↔ phone JID pair for one person (chats.phoneNumberShare). */
+  onAlias?: (lid: string | undefined, jid: string | undefined) => void;
   /** Diagnostics sink (reconnect failures). Defaults to console.error. */
   onLog?: (level: 'warn' | 'error', msg: string) => void;
 }
@@ -125,6 +127,10 @@ export class WhatsAppSocket {
     // initial history sync. Both events carry an array of {id, name?, notify?}.
     sock.ev.on('contacts.upsert', (c) => this.deps.onContacts?.(c));
     sock.ev.on('contacts.update', (c) => this.deps.onContacts?.(c));
+    // A contact's phone number becoming visible links their LID to it.
+    sock.ev.on('chats.phoneNumberShare' as never, (u: { lid?: string; jid?: string }) =>
+      this.deps.onAlias?.(u?.lid, u?.jid),
+    );
   }
 
   /**

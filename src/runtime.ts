@@ -3,7 +3,7 @@ import type { proto, WASocket } from '@whiskeysockets/baileys';
 import type { Batch, LogLevel } from '@kiagent/connector-sdk';
 
 import { dayKey, mergeMessages } from './chat-day';
-import { ContactBook } from './contacts';
+import { ContactBook, isFallbackName, normalizeJid } from './contacts';
 import { encodeMediaRef, MEDIA_SIZE_CAP_BYTES } from './media';
 import { normalizeWAMessage, unwrapMessage } from './messages';
 import { AsyncBatchQueue } from './queue';
@@ -78,7 +78,13 @@ export interface PullRuntimeDeps {
    * in-memory ledger — this replaces v1's read-modify-write and survives
    * restarts where Baileys does NOT re-deliver old messages.
    */
-  loadPriorMessages: (externalId: string) => Promise<NormalizedMessage[] | null>;
+  loadPriorMessages: (externalId: string) => Promise<NormalizedMessage[] | PriorDay | null>;
+  /** Persisted contact book (names + phone/LID aliases), restored at start
+   *  and saved as names arrive. Absent → names live for this run only. */
+  contactStore?: {
+    read(): unknown;
+    write(snapshot: unknown): void;
+  };
   log: (level: LogLevel, msg: string) => void;
   /** Debounce for the auto-flush after an ingest burst. Default 1500ms. */
   flushDebounceMs?: number;
@@ -92,6 +98,25 @@ export interface PullRuntimeDeps {
   reconnectBaseMs?: number;
   reconnectCapMs?: number;
 }
+
+/** A stored day as loadPriorMessages returns it: its message ledger and the
+ *  chat name it was rendered with. */
+export interface PriorDay {
+  messages: NormalizedMessage[];
+  chatName?: string | null;
+}
+
+/** A stored day the startup scan found rendered without a real name. */
+export interface StoredFallbackDay {
+  jid: string;
+  day: string;
+}
+
+/** Most day items one flushed batch carries. */
+const FLUSH_MAX_DAYS = 200;
+
+/** Debounce for persisting the contact book after a burst of names. */
+const CONTACTS_SAVE_DEBOUNCE_MS = 2_000;
 
 /** In-memory ledger for one (chat, local day). */
 interface DayLedger {
@@ -134,6 +159,12 @@ export class WhatsAppPullRuntime {
   private readonly socket: WhatsAppSocket;
 
   private readonly book: ContactBook;
+
+  /** Stored days rendered with a number for a name, by chat (normalized
+   *  jid) — re-emitted as soon as this run learns the real name. */
+  private readonly unnamedDays = new Map<string, Set<string>>();
+
+  private contactsSaveTimer?: ReturnType<typeof setTimeout>;
 
   private readonly ledgers = new Map<string, DayLedger>();
 
@@ -196,6 +227,12 @@ export class WhatsAppPullRuntime {
   constructor(private readonly deps: PullRuntimeDeps) {
     this.lastTsMs = deps.initialLastTsMs;
     this.book = new ContactBook(deps.selfJid);
+    try {
+      this.book.restore(deps.contactStore?.read());
+    } catch {
+      /* a bad cache only costs names until they arrive again */
+    }
+    this.book.onLearn = (jids) => this.onNamesLearned(jids);
     this.socket = new WhatsAppSocket({
       makeSocket: deps.makeSocket,
       reconnectBaseMs: deps.reconnectBaseMs,
@@ -253,6 +290,7 @@ export class WhatsAppPullRuntime {
         }
       },
       onContacts: (c) => this.absorbContacts(c, undefined),
+      onAlias: (lid, jid) => this.book.alias(lid, jid),
     });
   }
 
@@ -300,6 +338,11 @@ export class WhatsAppPullRuntime {
       clearTimeout(this.catchUpTimer);
       this.catchUpTimer = undefined;
     }
+    if (this.contactsSaveTimer) {
+      clearTimeout(this.contactsSaveTimer);
+      this.contactsSaveTimer = undefined;
+      this.saveContacts();
+    }
     await this.socket.stop();
     // Bounded wait: a downloader that ignores the abort must not hold the
     // generator hostage — after the deadline, proceed with the shutdown (the
@@ -340,15 +383,25 @@ export class WhatsAppPullRuntime {
     for (const c of contacts ?? []) {
       const r = c as {
         id?: string;
+        lid?: string;
+        jid?: string;
         name?: string;
         notify?: string;
         verifiedName?: string;
       };
-      if (r?.id) this.book.set(r.id, r.name ?? r.notify ?? r.verifiedName);
+      if (!r?.id) continue;
+      // History-sync contacts carry the person's other id (phone ↔ LID);
+      // chats are often keyed by the one the name did not come under.
+      if (r.lid) this.book.alias(r.id, r.lid);
+      if (r.jid) this.book.alias(r.id, r.jid);
+      this.book.set(r.id, r.name ?? r.notify ?? r.verifiedName);
     }
     for (const ch of chats ?? []) {
-      const r = ch as { id?: string; name?: string };
-      if (r?.id && r?.name) this.book.set(r.id, r.name);
+      const r = ch as { id?: string; name?: string; pnJid?: string; lidJid?: string };
+      if (!r?.id) continue;
+      if (r.pnJid) this.book.alias(r.id, r.pnJid);
+      if (r.lidJid) this.book.alias(r.id, r.lidJid);
+      if (r.name) this.book.set(r.id, r.name);
     }
   }
 
@@ -369,6 +422,19 @@ export class WhatsAppPullRuntime {
         : wm.key?.fromMe
           ? undefined
           : jid;
+      const k = wm.key as
+        | {
+            senderPn?: string;
+            senderLid?: string;
+            participantPn?: string;
+            participantLid?: string;
+          }
+        | undefined;
+      if (jid.endsWith('@g.us')) {
+        this.book.alias(wm.key?.participant, k?.participantPn ?? k?.participantLid);
+      } else if (!wm.key?.fromMe) {
+        this.book.alias(jid, k?.senderPn ?? k?.senderLid);
+      }
       if (!wm.key?.fromMe && senderJid && wm.pushName)
         this.book.set(senderJid, wm.pushName);
 
@@ -509,9 +575,102 @@ export class WhatsAppPullRuntime {
       const item = await this.buildDayItem(key);
       if (!item) continue; // prior-load failed: stays dirty, retried next flush
       this.dirty.delete(key);
-      items.push(item);
+      if (item !== 'empty') items.push(item);
     }
-    if (items.length > 0) this.push(items);
+    // A name repair after a fresh link can dirty a whole year of days at
+    // once: keep each batch a bounded size.
+    for (let i = 0; i < items.length; i += FLUSH_MAX_DAYS) {
+      this.push(items.slice(i, i + FLUSH_MAX_DAYS));
+    }
+  }
+
+  /** Teach the book a chat's name from its stored day when this run does
+   *  not know it: the stored chat name, or (in a DM) a stored real sender. */
+  private seedNameFromPrior(jid: string, prior: PriorDay | null): void {
+    if (!prior || this.book.known(jid)) return;
+    if (!isFallbackName(prior.chatName)) {
+      this.book.set(jid, prior.chatName!);
+      return;
+    }
+    if (jid.endsWith('@g.us')) return;
+    const other = prior.messages.find(
+      (m) => !m.system && m.sender !== 'You' && !isFallbackName(m.sender),
+    );
+    if (other) this.book.set(jid, other.sender);
+  }
+
+  /**
+   * The startup scan's findings: stored days rendered without a real name.
+   * Those whose name is already known re-render now; the rest wait for the
+   * name to arrive during this run.
+   */
+  noteUnnamedDays(days: StoredFallbackDay[]): void {
+    if (this.closed) return;
+    const now: string[] = [];
+    for (const d of days) {
+      const jid = normalizeJid(d.jid);
+      if (this.book.known(jid)) {
+        this.markDayDirty(d.jid, d.day);
+        now.push(jid);
+      } else {
+        let set = this.unnamedDays.get(jid);
+        if (!set) {
+          set = new Set();
+          this.unnamedDays.set(jid, set);
+        }
+        set.add(`${d.jid}:${d.day}`);
+      }
+    }
+    if (now.length) this.scheduleFlush();
+  }
+
+  private markDayDirty(jid: string, day: string): void {
+    const key = `${jid}:${day}`;
+    if (!this.ledgers.has(key)) this.ledgers.set(key, { jid, day, byId: new Map() });
+    this.dirty.add(key);
+  }
+
+  /** A name just became known for these jids: re-render every day of theirs
+   *  this run holds, and every stored day the scan found without one. */
+  private onNamesLearned(jids: string[]): void {
+    if (this.closed) return;
+    const learned = new Set(jids);
+    let touched = false;
+    for (const [key, ledger] of this.ledgers) {
+      if (learned.has(normalizeJid(ledger.jid))) {
+        this.dirty.add(key);
+        touched = true;
+      }
+    }
+    for (const jid of learned) {
+      const pending = this.unnamedDays.get(jid);
+      if (!pending) continue;
+      this.unnamedDays.delete(jid);
+      for (const key of pending) {
+        const sep = key.lastIndexOf(':');
+        this.markDayDirty(key.slice(0, sep), key.slice(sep + 1));
+        touched = true;
+      }
+    }
+    if (touched) this.scheduleFlush();
+    this.scheduleContactsSave();
+  }
+
+  private scheduleContactsSave(): void {
+    if (!this.deps.contactStore || this.contactsSaveTimer) return;
+    this.contactsSaveTimer = setTimeout(() => {
+      this.contactsSaveTimer = undefined;
+      this.saveContacts();
+    }, CONTACTS_SAVE_DEBOUNCE_MS);
+    this.contactsSaveTimer.unref?.();
+  }
+
+  private saveContacts(): void {
+    try {
+      this.deps.contactStore?.write(this.book.snapshot());
+    } catch (e) {
+      this.deps.log('warn', `whatsapp: saving contact names failed: ${errText(e)}`);
+    }
   }
 
   private chatInfoFor(jid: string): ChatInfo {
@@ -532,11 +691,11 @@ export class WhatsAppPullRuntime {
    * day item MISSING messages the store already had (metadata.messages is the
    * durable ledger; emitting a subset would shrink it).
    */
-  private async buildDayItem(key: string): Promise<DayItem | null> {
+  private async buildDayItem(key: string): Promise<DayItem | 'empty' | null> {
     const ledger = this.ledgers.get(key);
     if (!ledger) return null;
     if (!this.priorFetched.has(key)) {
-      let prior: NormalizedMessage[] | null;
+      let prior: NormalizedMessage[] | PriorDay | null;
       try {
         prior = await this.deps.loadPriorMessages(key);
       } catch (e) {
@@ -547,18 +706,47 @@ export class WhatsAppPullRuntime {
         return null;
       }
       this.priorFetched.add(key);
-      if (prior && prior.length > 0) {
+      const priorDay: PriorDay | null = Array.isArray(prior)
+        ? { messages: prior }
+        : prior;
+      const priorMessages = priorDay?.messages ?? [];
+      // A name the store already shows must survive a run that has not
+      // learned it (yet): seed the book before anything renders.
+      this.seedNameFromPrior(ledger.jid, priorDay);
+      if (priorMessages.length > 0) {
+        const priorById = new Map(priorMessages.map((m) => [m.id, m]));
         const merged = mergeMessages(
-          prior,
+          priorMessages,
           [...ledger.byId.values()],
           (m) => m.tsMs,
-        );
+        ).map((m) => {
+          // The merge lets the incoming copy win; never at the cost of a
+          // real sender name degrading to a number.
+          const p = priorById.get(m.id);
+          return p && isFallbackName(m.sender) && !m.system && !isFallbackName(p.sender)
+            ? { ...m, sender: p.sender }
+            : m;
+        });
         ledger.byId = new Map(merged.map((m) => [m.id, m]));
       }
     }
-    const messages = [...ledger.byId.values()].sort(
-      (a, b) => a.tsMs - b.tsMs || a.id.localeCompare(b.id),
-    );
+    const isDm = !ledger.jid.endsWith('@g.us');
+    const known = isDm ? this.book.known(ledger.jid) : null;
+    const messages = [...ledger.byId.values()]
+      .map((m) =>
+        // In a DM every message that is not ours is the other person's.
+        known && !m.system && m.sender !== 'You' && isFallbackName(m.sender)
+          ? { ...m, sender: known }
+          : m,
+      )
+      .sort((a, b) => a.tsMs - b.tsMs || a.id.localeCompare(b.id));
+    ledger.byId = new Map(messages.map((m) => [m.id, m]));
+    // A repair target whose stored doc is gone: nothing to render, and an
+    // empty day must never be emitted.
+    if (messages.length === 0) {
+      this.ledgers.delete(key);
+      return 'empty';
+    }
     return { kind: 'day', chat: this.chatInfoFor(ledger.jid), day: ledger.day, messages };
   }
 
@@ -675,7 +863,7 @@ export class WhatsAppPullRuntime {
   private async emitMediaBatch(m: PendingMedia, bytes: Buffer): Promise<void> {
     const key = `${m.jid}:${m.day}`;
     const day = await this.buildDayItem(key);
-    if (!day) {
+    if (!day || day === 'empty') {
       this.deps.log(
         'warn',
         `whatsapp: media ${m.msgId} dropped — no day ledger for ${key}`,

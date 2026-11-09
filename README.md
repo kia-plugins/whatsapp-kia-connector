@@ -96,6 +96,11 @@ reactions are not indexed, stories/status broadcasts are skipped.
   version that WhatsApp accepted in `wa-version.json` under the same data
   directory. That file holds three integers and no personal data; deleting it
   only costs one fetch.
+- Contact display names WhatsApp sends (and which phone number belongs to
+  which WhatsApp LID) are kept in `contacts/<account>.json` under the same data
+  directory, so chat days keep their names across restarts and re-links. It
+  holds names and ids only, no messages, and stays on this computer; deleting
+  it only means names reappear as WhatsApp re-sends them.
 
 ## Changes from the v1 connector
 

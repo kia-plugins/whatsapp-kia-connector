@@ -56,6 +56,10 @@ interface HarnessOpts {
   downloadMedia?: (wm: unknown) => Promise<Buffer | null>;
   /** Prior store ledgers keyed by chat-day externalId. */
   prior?: Record<string, NormalizedMessage[]>;
+  /** Stored chat_name per chat-day externalId (with `prior`). */
+  priorChatName?: Record<string, string>;
+  /** Reuse a data dir (contact book persistence across runs). */
+  dir?: string;
   /** Omit/point the account config somewhere broken. */
   authFile?: string | null;
   cursor?: WhatsAppCursor | null;
@@ -64,7 +68,7 @@ interface HarnessOpts {
 }
 
 async function harness(opts: HarnessOpts = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-pull-'));
+  const dir = opts.dir ?? fs.mkdtempSync(path.join(os.tmpdir(), 'wa-pull-'));
   let authFile: string;
   if (opts.authFile === undefined) {
     const fresh = makeFreshAuthState();
@@ -102,7 +106,8 @@ async function harness(opts: HarnessOpts = {}) {
       byExternalId: async (_account: string, externalId: string) => {
         queried.push(externalId);
         const messages = opts.prior?.[externalId];
-        return messages ? ({ metadata: { messages } } as never) : null;
+        const chat_name = opts.priorChatName?.[externalId];
+        return messages ? ({ metadata: { messages, chat_name } } as never) : null;
       },
       search: async (q: { offset?: number; limit?: number }) =>
         (opts.stored ?? []).slice(q.offset ?? 0, (q.offset ?? 0) + (q.limit ?? 50)),
@@ -992,3 +997,177 @@ describe('pull — reply targets', () => {
     while (!(await h.it.next()).done);
   });
 });
+
+describe('pull — names survive re-syncs (phone/LID aliases, stored names, repair)', () => {
+  const LID = '84666791022771@lid';
+  const PN = '4917612345678@s.whatsapp.net';
+  const LID_DAY_KEY = `${LID}:${DAY}`;
+
+  /** Collect day items until `pred` holds over everything seen so far. */
+  async function daysUntil(
+    it: AsyncIterator<WABatch>,
+    pred: (days: DayItem[]) => boolean,
+    pending?: Promise<IteratorResult<WABatch>>,
+  ): Promise<DayItem[]> {
+    const days: DayItem[] = [];
+    let first = pending;
+    while (!pred(days)) {
+      const b = await nextBatch(it, first);
+      first = undefined;
+      for (const i of b.items) if (i.kind === 'day') days.push(i as DayItem);
+    }
+    return days;
+  }
+
+  async function shutdown(h: { controller: AbortController; it: AsyncIterator<WABatch> }) {
+    void h.controller.abort();
+    while (!(await h.it.next()).done) {
+      /* drain */
+    }
+  }
+
+  it('names a LID-keyed chat from a contact that came keyed by phone number', async () => {
+    const h = await harness();
+    const pending = h.it.next();
+    await waitFor(() => h.state.made === 1);
+
+    h.ev.emit('messaging-history.set', {
+      contacts: [{ id: PN, lid: LID, name: 'Theresa Dehmer' }],
+      chats: [],
+      messages: [textMsg('L1', T0_SEC, 'hallo', LID)],
+    });
+
+    const days = await daysUntil(h.it, (d) => d.length > 0, pending);
+    const day = days[days.length - 1];
+    expect(day.chat.name).toBe('Theresa Dehmer');
+    expect(day.messages[0].sender).toBe('Theresa Dehmer');
+    await shutdown(h);
+  });
+
+  it('links phone and LID from a conversation\'s pnJid', async () => {
+    const h = await harness();
+    const pending = h.it.next();
+    await waitFor(() => h.state.made === 1);
+
+    h.ev.emit('messaging-history.set', {
+      contacts: [{ id: PN, notify: 'Theresa' }],
+      chats: [{ id: LID, pnJid: PN }],
+      messages: [textMsg('L1', T0_SEC, 'hallo', LID)],
+    });
+
+    const days = await daysUntil(h.it, (d) => d.length > 0, pending);
+    expect(days[days.length - 1].chat.name).toBe('Theresa');
+    await shutdown(h);
+  });
+
+  it('keeps the stored name when a re-delivered day arrives without one', async () => {
+    const h = await harness({
+      prior: {
+        [LID_DAY_KEY]: [
+          { id: 'L1', tsMs: T0_MS, sender: 'Theresa Dehmer', text: 'hallo', system: false },
+        ],
+      },
+      priorChatName: { [LID_DAY_KEY]: 'Theresa Dehmer' },
+    });
+    const pending = h.it.next();
+    await waitFor(() => h.state.made === 1);
+
+    // A fresh link re-delivers the day with no contacts at all.
+    h.ev.emit('messaging-history.set', {
+      contacts: [],
+      chats: [],
+      messages: [textMsg('L1', T0_SEC, 'hallo', LID), textMsg('L2', T0_SEC + 60, 'neu', LID)],
+    });
+
+    const days = await daysUntil(h.it, (d) => d.length > 0, pending);
+    const day = days[days.length - 1];
+    expect(day.chat.name).toBe('Theresa Dehmer');
+    expect(day.messages.map((m) => m.sender)).toEqual(['Theresa Dehmer', 'Theresa Dehmer']);
+    const doc = h.source.toDocument(day) as { title: string };
+    expect(doc.title).toBe('Theresa Dehmer — Jun 11, 2026');
+    await shutdown(h);
+  });
+
+  it('re-renders a day already written with a number once the name arrives later in the run', async () => {
+    const h = await harness();
+    const pending = h.it.next();
+    await waitFor(() => h.state.made === 1);
+
+    h.ev.emit('messaging-history.set', {
+      contacts: [],
+      chats: [],
+      messages: [textMsg('L1', T0_SEC, 'hallo', LID)],
+    });
+    const first = await daysUntil(h.it, (d) => d.length > 0, pending);
+    expect(first[0].chat.name).toBe('+84666791022771');
+
+    // WhatsApp's push-name sync arrives as a later history chunk.
+    h.ev.emit('messaging-history.set', {
+      contacts: [{ id: PN, lid: LID, notify: 'Theresa Dehmer' }],
+      chats: [],
+      messages: [],
+    });
+    const later = await daysUntil(h.it, (d) => d.some((x) => x.chat.name === 'Theresa Dehmer'));
+    const fixed = later.find((x) => x.chat.name === 'Theresa Dehmer')!;
+    expect(fixed.day).toBe(DAY);
+    expect(fixed.messages[0].sender).toBe('Theresa Dehmer');
+    await shutdown(h);
+  });
+
+  it('repairs a stored day rendered with a number when the name is learned', async () => {
+    const storedMeta = {
+      chat_key: LID,
+      chat_type: 'dm',
+      chat_name: '+84666791022771',
+      messages: [
+        { id: 'S1', tsMs: T0_MS, sender: '+84666791022771', text: 'alt', system: false },
+        { id: 'S2', tsMs: T0_MS + 1000, sender: 'You', text: 'ok', system: false },
+      ],
+    };
+    const h = await harness({
+      stored: [
+        { externalId: LID_DAY_KEY, title: '+84666791022771 — Jun 11, 2026', createdAt: new Date(T0_MS).toISOString(), metadata: storedMeta },
+      ],
+      prior: { [LID_DAY_KEY]: storedMeta.messages as NormalizedMessage[] },
+      priorChatName: { [LID_DAY_KEY]: '+84666791022771' },
+    });
+    const pending = h.it.next();
+    await waitFor(() => h.state.made === 1);
+
+    // Only the name arrives — no message for that day in this run.
+    h.ev.emit('contacts.upsert', [{ id: PN, lid: LID, name: 'Theresa Dehmer' }]);
+
+    const days = await daysUntil(h.it, (d) => d.some((x) => x.chat.name === 'Theresa Dehmer'), pending);
+    const fixed = days.find((x) => x.chat.name === 'Theresa Dehmer')!;
+    expect(fixed.messages.map((m) => [m.id, m.sender])).toEqual([
+      ['S1', 'Theresa Dehmer'],
+      ['S2', 'You'],
+    ]);
+    await shutdown(h);
+  });
+
+  it('remembers names across runs (persisted contact book)', async () => {
+    const first = await harness();
+    let pending = first.it.next();
+    await waitFor(() => first.state.made === 1);
+    first.ev.emit('messaging-history.set', {
+      contacts: [{ id: PN, lid: LID, name: 'Theresa Dehmer' }],
+      chats: [],
+      messages: [textMsg('L1', T0_SEC, 'hallo', LID)],
+    });
+    await daysUntil(first.it, (d) => d.length > 0, pending);
+    await shutdown(first);
+
+    const second = await harness({ dir: first.dir });
+    pending = second.it.next();
+    await waitFor(() => second.state.made === 1);
+    second.ev.emit('messages.upsert', {
+      type: 'notify',
+      messages: [textMsg('L9', T0_SEC + 3600, 'wieder da', LID)],
+    });
+    const days = await daysUntil(second.it, (d) => d.length > 0, pending);
+    expect(days[days.length - 1].chat.name).toBe('Theresa Dehmer');
+    await shutdown(second);
+  });
+});
+

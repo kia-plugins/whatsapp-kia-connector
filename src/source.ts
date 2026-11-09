@@ -41,6 +41,7 @@ import {
 import { DOC_TYPE, dayTitle, renderDay } from './chat-day';
 import { normalizeJid } from './contacts';
 import { markLoggedOut, registerLive } from './live';
+import { fileContactStore, unnamedStoredDays } from './names';
 import { migrationItems, outboundFor } from './outbound';
 import {
   attachmentFilename,
@@ -226,8 +227,14 @@ export function createWhatsAppSource(
             externalId,
             DOC_TYPE,
           );
-          const prior = (doc?.metadata as { messages?: unknown })?.messages;
-          return Array.isArray(prior) ? (prior as NormalizedMessage[]) : null;
+          const meta = doc?.metadata as
+            | { messages?: unknown; chat_name?: unknown }
+            | undefined;
+          if (!Array.isArray(meta?.messages)) return null;
+          return {
+            messages: meta!.messages as NormalizedMessage[],
+            chatName: typeof meta!.chat_name === 'string' ? meta!.chat_name : null,
+          };
         },
         hasStoredFile: async (externalId) =>
           (await host.query.byExternalId(
@@ -236,6 +243,13 @@ export function createWhatsAppSource(
             FILE_DOC_TYPE,
           )) !== null,
         log: (level, msg) => session.log(level, msg),
+        contactStore: fileContactStore(
+          path.join(
+            host.self.dataDir,
+            'contacts',
+            `${sanitizeIdentifier(session.account.identifier)}.json`,
+          ),
+        ),
         flushDebounceMs: seams.flushDebounceMs,
         catchUpQuietMs: seams.catchUpQuietMs,
         mediaTimeoutMs: seams.mediaTimeoutMs,
@@ -269,6 +283,18 @@ export function createWhatsAppSource(
       // The Sender reaches this account's one socket through here.
       const unregister = registerLive(session.account.id, runtime);
       session.signal.addEventListener('abort', onAbort, { once: true });
+      // Stored days rendered with a number for a name re-render as soon as
+      // the name is known (names.ts). Background: never holds up the pull.
+      if (cursor !== null) {
+        void (async () => {
+          for await (const page of unnamedStoredDays(host, session.account.id)) {
+            if (session.signal.aborted) return;
+            runtime.noteUnnamedDays(page);
+          }
+        })().catch((e) =>
+          session.log('warn', `whatsapp: unnamed-day scan failed: ${e instanceof Error ? e.message : String(e)}`),
+        );
+      }
       try {
         await runtime.start();
         for (;;) {
