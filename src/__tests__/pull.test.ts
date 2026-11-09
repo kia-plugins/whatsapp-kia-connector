@@ -599,6 +599,94 @@ describe('pull — media', () => {
     }
   });
 
+  it('ingests a voice note from a disappearing-messages chat (ephemeral wrapper) and downloads it', async () => {
+    const downloaded: unknown[] = [];
+    const h = await harness({
+      downloadMedia: async (wm: unknown) => {
+        downloaded.push(wm);
+        return Buffer.from('opus-bytes');
+      },
+    });
+    const pending = h.it.next();
+    await waitFor(() => h.state.made === 1);
+
+    h.ev.emit('messages.upsert', {
+      type: 'notify',
+      messages: [
+        {
+          key: { id: 'EVN1', remoteJid: ALICE },
+          messageTimestamp: T0_SEC,
+          message: {
+            ephemeralMessage: {
+              message: {
+                audioMessage: {
+                  mimetype: 'audio/ogg; codecs=opus',
+                  seconds: 68,
+                  ptt: true,
+                  directPath: '/v/t62/eph',
+                  mediaKey: new Uint8Array([4, 5, 6]),
+                },
+              },
+            },
+          },
+        },
+      ],
+    });
+
+    const batches: WABatch[] = [await nextBatch(h.it, pending)];
+    while (!batches.some((x) => x.items.some((i) => i.kind === 'file'))) {
+      batches.push(await nextBatch(h.it));
+    }
+    const day = batches
+      .flatMap((x) => x.items)
+      .find((i): i is DayItem => i.kind === 'day')!;
+    const dayDoc = h.source.toDocument(day) as { markdown: string };
+    expect(dayDoc.markdown).toContain('[voice note 1:08]');
+    expect(downloaded).toHaveLength(1);
+    const file = batches
+      .flatMap((x) => x.items)
+      .find((i): i is FileItem => i.kind === 'file')!;
+    const doc = h.source.toDocument(file) as unknown as { metadata: { mime: string } };
+    expect(doc.metadata.mime).toBe('audio/ogg');
+
+    void h.controller.abort();
+    while (!(await h.it.next()).done) {
+      /* drain */
+    }
+  });
+
+  it('logs an unhandled message type once, and stays quiet for routine non-content traffic', async () => {
+    const h = await harness();
+    const pending = h.it.next();
+    await waitFor(() => h.state.made === 1);
+
+    const odd = (id: string) => ({
+      key: { id, remoteJid: ALICE },
+      messageTimestamp: T0_SEC,
+      message: { ephemeralMessage: { message: { someFutureMessage: { x: 1 } } } },
+    });
+    h.ev.emit('messages.upsert', {
+      type: 'notify',
+      messages: [
+        odd('U1'),
+        odd('U2'),
+        { key: { id: 'R1', remoteJid: ALICE }, messageTimestamp: T0_SEC, message: { reactionMessage: { text: '👍' } } },
+        textMsg('T1', T0_SEC, 'hi'),
+      ],
+    });
+    await nextBatch(h.it, pending);
+
+    const skips = h.logs.filter(([, m]) => m.includes('skipped a message'));
+    expect(skips).toEqual([
+      ['info', 'whatsapp: skipped a message of unhandled type "someFutureMessage"'],
+    ]);
+
+    void h.controller.abort();
+    while (!(await h.it.next()).done) {
+      /* drain */
+    }
+  });
+
   it('downloads media strictly one at a time (ban-risk discipline)', async () => {
     const started: string[] = [];
     let release: (() => void) | null = null;

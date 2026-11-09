@@ -58,4 +58,70 @@ describe('normalizeWAMessage', () => {
     );
     expect(n).toBeNull();
   });
+
+  describe('wrapped messages (disappearing / view-once / caption docs)', () => {
+    const dm = 'alice@s.whatsapp.net';
+    const wrap = (message: unknown) =>
+      normalizeWAMessage(
+        {
+          key: { id: 'W1', remoteJid: dm, fromMe: false },
+          messageTimestamp: 1793900000,
+          message,
+        } as any,
+        book,
+        dm,
+      );
+    const voice = {
+      audioMessage: { mimetype: 'audio/ogg; codecs=opus', seconds: 42, ptt: true },
+    };
+
+    it.each([
+      ['ephemeralMessage', { ephemeralMessage: { message: voice } }],
+      ['viewOnceMessage', { viewOnceMessage: { message: voice } }],
+      ['viewOnceMessageV2', { viewOnceMessageV2: { message: voice } }],
+      ['viewOnceMessageV2Extension', { viewOnceMessageV2Extension: { message: voice } }],
+    ])('indexes a voice note wrapped in %s', (_name, message) => {
+      expect(wrap(message)).toMatchObject({
+        id: 'W1',
+        sender: 'Alice',
+        media: { kind: 'audio', durationSec: 42 },
+      });
+    });
+
+    it('indexes text in a disappearing-messages chat, keeping its quote', () => {
+      const n = wrap({
+        ephemeralMessage: {
+          message: {
+            extendedTextMessage: {
+              text: 'see you then',
+              contextInfo: {
+                participant: dm,
+                quotedMessage: { conversation: 'tomorrow at 10?' },
+              },
+            },
+          },
+        },
+      });
+      expect(n).toMatchObject({ text: 'see you then', quote: { snippet: 'tomorrow at 10?' } });
+    });
+
+    it('indexes a document-with-caption nested inside an ephemeral wrapper', () => {
+      const n = wrap({
+        ephemeralMessage: {
+          message: {
+            documentWithCaptionMessage: {
+              message: {
+                documentMessage: { fileName: 'contract.pdf', caption: 'signed', mimetype: 'application/pdf' },
+              },
+            },
+          },
+        },
+      });
+      expect(n).toMatchObject({ text: 'signed', media: { kind: 'document', filename: 'contract.pdf' } });
+    });
+
+    it('still returns null for a wrapped reaction', () => {
+      expect(wrap({ ephemeralMessage: { message: { reactionMessage: {} } } })).toBeNull();
+    });
+  });
 });

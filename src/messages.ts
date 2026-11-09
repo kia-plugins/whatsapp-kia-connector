@@ -56,6 +56,34 @@ function plainText(m: proto.IMessage): string | null {
   return null;
 }
 
+/**
+ * Peel Baileys' "future-proof" envelopes off a message. A chat with
+ * disappearing messages wraps every message in `ephemeralMessage`; view-once
+ * media comes in `viewOnceMessage*`; captioned documents in
+ * `documentWithCaptionMessage` — and they nest (ephemeral → doc-with-caption).
+ * `messages.upsert` delivers them still wrapped, so reading `audioMessage` etc.
+ * off the top level silently drops them. Mirrors Baileys'
+ * `normalizeMessageContent` (same wrappers, same depth bound) without pulling
+ * Baileys' runtime into this pure module.
+ */
+export function unwrapMessage(
+  m: proto.IMessage | null | undefined,
+): proto.IMessage | undefined {
+  let content = m ?? undefined;
+  for (let i = 0; i < 5 && content; i++) {
+    const inner =
+      content.ephemeralMessage ??
+      content.viewOnceMessage ??
+      content.documentWithCaptionMessage ??
+      content.viewOnceMessageV2 ??
+      content.viewOnceMessageV2Extension ??
+      content.editedMessage;
+    if (!inner?.message) break;
+    content = inner.message;
+  }
+  return content;
+}
+
 /** Robustly coerce a Baileys timestamp (number | Long | null) to epoch ms. */
 function tsToMs(ts: proto.IWebMessageInfo['messageTimestamp']): number {
   if (ts == null) return 0;
@@ -70,7 +98,7 @@ export function normalizeWAMessage(
   chatJid: string,
 ): NormalizedMessage | null {
   const id = wm.key?.id;
-  const msg = wm.message;
+  const msg = unwrapMessage(wm.message);
   if (!id || !msg) return null;
 
   const tsMs = tsToMs(wm.messageTimestamp);

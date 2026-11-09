@@ -5,7 +5,7 @@ import type { Batch, LogLevel } from '@kiagent/connector-sdk';
 import { dayKey, mergeMessages } from './chat-day';
 import { ContactBook } from './contacts';
 import { encodeMediaRef, MEDIA_SIZE_CAP_BYTES } from './media';
-import { normalizeWAMessage } from './messages';
+import { normalizeWAMessage, unwrapMessage } from './messages';
 import { AsyncBatchQueue } from './queue';
 import { NOT_CONNECTED, WhatsAppSocket } from './socket';
 import type {
@@ -27,6 +27,19 @@ const MEDIA_DOWNLOAD_TIMEOUT_MS = 60_000;
 
 /** How long stop() waits for the media drain to settle before proceeding. */
 const STOP_MEDIA_WAIT_MS = 5_000;
+
+/** Message content keys that carry nothing to index (reactions, receipts,
+ *  key distribution, edits/deletes as protocol messages, poll votes…). */
+const EXPECTED_SKIPS = new Set([
+  'messageContextInfo',
+  'senderKeyDistributionMessage',
+  'protocolMessage',
+  'reactionMessage',
+  'encReactionMessage',
+  'pollUpdateMessage',
+  'keepInChatMessage',
+  'pinInChatMessage',
+]);
 
 /** How long the history stream must stay quiet (no chunk since connect or
  *  since the last one) before the backlog counts as delivered and the phase
@@ -170,6 +183,8 @@ export class WhatsAppPullRuntime {
    *  after catch-up would show "backfilling" forever: the engine only flips
    *  status on a live-phase batch commit. */
   private historyDone = false;
+  /** Message types already reported as skipped — log each once per run. */
+  private readonly skippedTypes = new Set<string>();
 
   private catchUpTimer?: ReturnType<typeof setTimeout>;
 
@@ -358,7 +373,10 @@ export class WhatsAppPullRuntime {
         this.book.set(senderJid, wm.pushName);
 
       const norm = normalizeWAMessage(wm, this.book, jid);
-      if (!norm) continue;
+      if (!norm) {
+        this.noteSkipped(wm);
+        continue;
+      }
       if (kind === 'live') this.liveSeen = true;
 
       const day = dayKey(norm.tsMs);
@@ -391,6 +409,23 @@ export class WhatsAppPullRuntime {
     }
     this.scheduleFlush();
     this.kickMedia();
+  }
+
+  /**
+   * A message with a body that normalized to nothing used to vanish without a
+   * trace (disappearing-chat and view-once messages did, for months). Report
+   * each unhandled content type once per run; routine non-content traffic is
+   * expected and stays quiet.
+   */
+  private noteSkipped(wm: proto.IWebMessageInfo): void {
+    const content = unwrapMessage(wm.message);
+    if (!content) return;
+    for (const type of Object.keys(content)) {
+      if (EXPECTED_SKIPS.has(type) || this.skippedTypes.has(type)) continue;
+      if ((content as Record<string, unknown>)[type] == null) continue;
+      this.skippedTypes.add(type);
+      this.deps.log('info', `whatsapp: skipped a message of unhandled type "${type}"`);
+    }
   }
 
   /** Debounced auto-flush so batches appear within seconds of a burst. */
